@@ -27,8 +27,8 @@ interface HourlyData {
   timestamp: string
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8080'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://webtraffic-graph.onrender.com'
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://webtraffic-graph.onrender.com'
 
 export function WebsiteTrafficChart() {
   const [chartData, setChartData] = React.useState<TrafficData[]>([
