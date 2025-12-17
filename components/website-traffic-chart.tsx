@@ -5,16 +5,6 @@ import { Area, AreaChart, XAxis, Tooltip, ResponsiveContainer } from "recharts"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { ChartContainer, type ChartConfig } from "@/components/ui/chart"
 
-const chartData = [
-  { day: "Mon", traffic: 3200 },
-  { day: "Tue", traffic: 2800 },
-  { day: "Wed", traffic: 3100 },
-  { day: "Thu", traffic: 2950 },
-  { day: "Fri", traffic: 2300 },
-  { day: "Sat", traffic: 3700 },
-  { day: "Sun", traffic: 3350 },
-]
-
 const chartConfig = {
   traffic: {
     label: "Traffic",
@@ -22,10 +12,174 @@ const chartConfig = {
   },
 } satisfies ChartConfig
 
+interface TrafficData {
+  date: string
+  day: string
+  traffic: number
+  isCurrentDay?: boolean // Flag to indicate if this is the current day (real-time updates)
+}
+
+interface HourlyData {
+  hour: number
+  minute?: number
+  label: string
+  traffic: number
+  timestamp: string
+}
+
+type ViewMode = 'week' | 'day'
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8080'
+
 export function WebsiteTrafficChart() {
+  const [viewMode, setViewMode] = React.useState<ViewMode>('week')
+  const [chartData, setChartData] = React.useState<TrafficData[]>([
+    { date: "", day: "Mon", traffic: 0 },
+    { date: "", day: "Tue", traffic: 0 },
+    { date: "", day: "Wed", traffic: 0 },
+    { date: "", day: "Thu", traffic: 0 },
+    { date: "", day: "Fri", traffic: 0 },
+    { date: "", day: "Sat", traffic: 0 },
+    { date: "", day: "Sun", traffic: 0 },
+  ])
+  const [hourlyData, setHourlyData] = React.useState<HourlyData[]>([])
+  const [totalTraffic, setTotalTraffic] = React.useState(0)
+  const [percentageChange, setPercentageChange] = React.useState(0)
+  const [currentDayTraffic, setCurrentDayTraffic] = React.useState(0)
+  const [isConnected, setIsConnected] = React.useState(false)
+  const [lastUpdateTime, setLastUpdateTime] = React.useState(Date.now())
+  const [requestRate, setRequestRate] = React.useState(0)
   const [chartMargins, setChartMargins] = React.useState({ left: 8, right: 8, top: 8, bottom: 8 })
   const [strokeWidth, setStrokeWidth] = React.useState(2)
   const [activeDotRadius, setActiveDotRadius] = React.useState(3)
+  const wsRef = React.useRef<WebSocket | null>(null)
+  const reconnectTimeoutRef = React.useRef<NodeJS.Timeout | null>(null)
+  const previousDataRef = React.useRef<string>('')
+  const previousCurrentDayRef = React.useRef<number>(0)
+  const lastTrafficUpdateRef = React.useRef<number>(Date.now())
+
+
+  const fetchInitialData = React.useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/traffic`)
+      if (response.ok) {
+        const result = await response.json()
+        if (result.success && result.data) {
+          setChartData(result.data || [])
+          setHourlyData(result.hourlyData || [])
+          setTotalTraffic(result.total || 0)
+          setCurrentDayTraffic(result.currentDay || 0)
+          previousCurrentDayRef.current = result.currentDay || 0
+          setPercentageChange(result.percentageChange || 0)
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching initial traffic data:', error)
+    }
+  }, [])
+
+  React.useEffect(() => {
+    const connectWebSocket = () => {
+      try {
+        const ws = new WebSocket(WS_URL)
+        wsRef.current = ws
+
+        ws.onopen = () => {
+          console.log('WebSocket connected')
+          setIsConnected(true)
+          ws.send(JSON.stringify({ type: 'getTraffic' }))
+        }
+
+        ws.onmessage = (event) => {
+          try {
+            if (event.data instanceof ArrayBuffer || event.data instanceof Blob) {
+              return
+            }
+
+            const message = JSON.parse(event.data)
+            if (message.type === 'traffic' && message.data) {
+              const dataString = JSON.stringify(message.data)
+              const hasDataChanged = dataString !== previousDataRef.current
+              
+              if (hasDataChanged) {
+                setChartData(message.data || [])
+                previousDataRef.current = dataString
+              }
+              
+              setHourlyData(message.hourlyData || [])
+              
+              const currentDay = message.currentDay || 0
+              const now = Date.now()
+              
+              if (currentDay !== previousCurrentDayRef.current) {
+                const timeDiff = (now - lastTrafficUpdateRef.current) / 1000
+                if (timeDiff > 0) {
+                  const trafficDiff = currentDay - previousCurrentDayRef.current
+                  const rate = trafficDiff / timeDiff
+                  setRequestRate(rate)
+                }
+                lastTrafficUpdateRef.current = now
+                previousCurrentDayRef.current = currentDay
+              } else {
+                const timeSinceLastUpdate = (now - lastTrafficUpdateRef.current) / 1000
+                if (timeSinceLastUpdate > 2) {
+                  setRequestRate(0)
+                }
+              }
+              
+              setTotalTraffic(message.total || 0)
+              setCurrentDayTraffic(currentDay)
+              setPercentageChange(message.percentageChange || 0)
+              setLastUpdateTime(message.timestamp || Date.now())
+            }
+          } catch (error) {
+            console.error('Error parsing WebSocket message:', error)
+          }
+        }
+
+        ws.onerror = (error) => {
+          console.error('WebSocket error:', error)
+          setIsConnected(false)
+        }
+
+        ws.onclose = () => {
+          console.log('WebSocket disconnected')
+          setIsConnected(false)
+          reconnectTimeoutRef.current = setTimeout(() => {
+            connectWebSocket()
+          }, 3000)
+        }
+      } catch (error) {
+        console.error('Error connecting WebSocket:', error)
+        setIsConnected(false)
+        reconnectTimeoutRef.current = setTimeout(() => {
+          connectWebSocket()
+        }, 3000)
+      }
+    }
+
+    fetchInitialData()
+    
+    connectWebSocket()
+
+
+    const fallbackInterval = setInterval(() => {
+      if (wsRef.current?.readyState !== WebSocket.OPEN) {
+        fetchInitialData()
+      }
+    }, 2000)
+
+    return () => {
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current)
+      }
+      if (wsRef.current) {
+        wsRef.current.close()
+      }
+      clearInterval(fallbackInterval)
+    }
+  }, [fetchInitialData])
 
   React.useEffect(() => {
     const updateChartSettings = () => {
@@ -56,15 +210,55 @@ export function WebsiteTrafficChart() {
     <Card className="overflow-hidden rounded-xl sm:rounded-2xl border-white/10 bg-[#0b1220] text-white shadow-sm">
       <CardHeader className="pb-2 p-4 sm:p-6">
         <div className="space-y-1">
-          <p className="text-xs sm:text-sm font-medium text-white/70">Website Traffic</p>
-
-          <div className="flex items-baseline gap-3">
-            <div className="text-2xl sm:text-3xl md:text-4xl font-semibold tracking-tight">12,345</div>
+          <div className="flex items-center justify-between">
+            <p className="text-xs sm:text-sm font-medium text-white/70">Website Traffic</p>
+            <select
+              value={viewMode}
+              onChange={(e) => setViewMode(e.target.value as ViewMode)}
+              className="text-[10px] sm:text-xs px-2 py-1 rounded-md bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 focus:outline-none focus:ring-1 focus:ring-white/20 transition-colors"
+            >
+              <option value="week">Last 7 Days</option>
+              <option value="day">Current Day</option>
+            </select>
           </div>
 
-          <div className="text-[10px] sm:text-xs text-white/60">
-            Last 7 Days{" "}
-            <span className="ml-1 font-medium text-emerald-400">+12.5%</span>
+          <div className="flex items-baseline gap-3">
+            <div className="text-2xl sm:text-3xl md:text-4xl font-semibold tracking-tight">
+              {totalTraffic.toLocaleString()}
+            </div>
+            {isConnected ? (
+              <div className="flex items-center gap-1.5">
+                <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" title="Live updates active"></div>
+                <span className="text-[10px] text-emerald-400/70 hidden sm:inline">Live</span>
+              </div>
+            ) : (
+              <div className="text-xs text-yellow-400/70" title="Reconnecting...">
+                ⚠
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="text-[10px] sm:text-xs text-white/60">
+              Last 7 Days{" "}
+              {percentageChange !== 0 && (
+                <span className={`ml-1 font-medium ${percentageChange >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {percentageChange >= 0 ? '+' : ''}{percentageChange.toFixed(1)}%
+                </span>
+              )}
+            </div>
+            <div className="text-[10px] sm:text-xs text-white/50">
+              Today: <span className="font-medium text-white/70">{currentDayTraffic.toLocaleString()}</span>
+              {requestRate > 0 ? (
+                <span className="ml-1.5 text-emerald-400 font-medium">
+                  +{requestRate.toFixed(1)}/sec
+                </span>
+              ) : (
+                <span className="ml-1.5 text-white/40">
+                  0/sec
+                </span>
+              )}
+            </div>
           </div>
         </div>
       </CardHeader>
@@ -73,7 +267,16 @@ export function WebsiteTrafficChart() {
         <ChartContainer config={chartConfig} className="h-[160px] sm:h-[180px] md:h-[190px] lg:h-[200px] w-full">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart 
-              data={chartData} 
+              data={viewMode === 'week' 
+                ? chartData.map(d => ({ label: d.day, traffic: d.traffic }))
+                : (() => {
+                    let cumulative = 0
+                    return hourlyData.map(h => {
+                      cumulative += h.traffic
+                      return { label: h.label, traffic: cumulative }
+                    })
+                  })()
+              } 
               margin={chartMargins}
             >
               <defs>
@@ -92,11 +295,11 @@ export function WebsiteTrafficChart() {
               </defs>
 
               <XAxis
-                dataKey="day"
+                dataKey="label"
                 tickLine={false}
                 axisLine={false}
                 tickMargin={8}
-                interval={0}
+                interval={viewMode === 'day' ? Math.max(0, Math.floor((hourlyData.length || 1) / 12)) : 0}
                 tick={{ 
                   fill: "rgba(255,255,255,0.55)", 
                   fontSize: 10 
@@ -127,6 +330,8 @@ export function WebsiteTrafficChart() {
                 filter="url(#lineGlow)"
                 dot={false}
                 activeDot={{ r: activeDotRadius }}
+                isAnimationActive={true}
+                animationDuration={300}
               />
             </AreaChart>
           </ResponsiveContainer>
