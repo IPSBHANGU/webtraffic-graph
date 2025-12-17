@@ -2,6 +2,8 @@ import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import cors from 'cors';
+import { db, initializeDatabase, closeDatabase } from './db/index.js';
+import { dailyTraffic as dailyTrafficTable, hourlyTraffic as hourlyTrafficTable, minuteTraffic as minuteTrafficTable } from './db/schema.js';
 
 const app = express();
 const server = createServer(app);
@@ -113,6 +115,46 @@ function getCurrentDayHourlyTraffic() {
 }
 
 
+// Database sync functions (non-blocking, fire-and-forget)
+async function syncDailyTrafficToDb(date, count) {
+  try {
+    await db.insert(dailyTrafficTable)
+      .values({ date, count, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: [dailyTrafficTable.date],
+        set: { count, updatedAt: new Date() }
+      });
+  } catch (error) {
+    console.error('Error syncing daily traffic to DB:', error);
+  }
+}
+
+async function syncHourlyTrafficToDb(key, count) {
+  try {
+    await db.insert(hourlyTrafficTable)
+      .values({ key, count, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: [hourlyTrafficTable.key],
+        set: { count, updatedAt: new Date() }
+      });
+  } catch (error) {
+    console.error('Error syncing hourly traffic to DB:', error);
+  }
+}
+
+async function syncMinuteTrafficToDb(key, count) {
+  try {
+    await db.insert(minuteTrafficTable)
+      .values({ key, count, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: [minuteTrafficTable.key],
+        set: { count, updatedAt: new Date() }
+      });
+  } catch (error) {
+    console.error('Error syncing minute traffic to DB:', error);
+  }
+}
+
 async function incrementTraffic() {
   while (incrementLock) {
     await new Promise(resolve => setTimeout(resolve, 1));
@@ -125,14 +167,19 @@ async function incrementTraffic() {
     const newCount = currentCount + 1;
     
     dailyTraffic.set(today, newCount);
+    syncDailyTrafficToDb(today, newCount); // Sync to DB (non-blocking)
     
     const currentHourKey = getCurrentHourString();
     const currentHourCount = hourlyTraffic.get(currentHourKey) || 0;
-    hourlyTraffic.set(currentHourKey, currentHourCount + 1);
+    const newHourCount = currentHourCount + 1;
+    hourlyTraffic.set(currentHourKey, newHourCount);
+    syncHourlyTrafficToDb(currentHourKey, newHourCount); // Sync to DB (non-blocking)
     
     const currentMinuteKey = getCurrentMinuteIntervalString();
     const currentMinuteCount = minuteTraffic.get(currentMinuteKey) || 0;
-    minuteTraffic.set(currentMinuteKey, currentMinuteCount + 1);
+    const newMinuteCount = currentMinuteCount + 1;
+    minuteTraffic.set(currentMinuteKey, newMinuteCount);
+    syncMinuteTrafficToDb(currentMinuteKey, newMinuteCount); // Sync to DB (non-blocking)
     
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - 7);
@@ -197,9 +244,43 @@ function getPercentageChange() {
 
 function resetTraffic() {
   dailyTraffic.clear();
+  hourlyTraffic.clear();
+  minuteTraffic.clear();
 }
 
-console.log('✅ Using in-memory daily traffic tracking (Redis not required)');
+// Load data from database on startup
+async function loadTrafficFromDatabase() {
+  try {
+    // Load daily traffic
+    const dailyRecords = await db.select().from(dailyTrafficTable);
+    for (const record of dailyRecords) {
+      dailyTraffic.set(record.date, record.count);
+    }
+    console.log(`✅ Loaded ${dailyRecords.length} daily traffic records from database`);
+    
+    // Load hourly traffic
+    const hourlyRecords = await db.select().from(hourlyTrafficTable);
+    for (const record of hourlyRecords) {
+      hourlyTraffic.set(record.key, record.count);
+    }
+    console.log(`✅ Loaded ${hourlyRecords.length} hourly traffic records from database`);
+    
+    // Load minute traffic
+    const minuteRecords = await db.select().from(minuteTrafficTable);
+    for (const record of minuteRecords) {
+      minuteTraffic.set(record.key, record.count);
+    }
+    console.log(`✅ Loaded ${minuteRecords.length} minute traffic records from database`);
+  } catch (error) {
+    console.error('Error loading traffic from database:', error);
+  }
+}
+
+// Initialize database and load data
+await initializeDatabase();
+await loadTrafficFromDatabase();
+
+console.log('✅ Using in-memory daily traffic tracking with database persistence');
 
 const clients = new Set();
 
@@ -312,17 +393,22 @@ app.post('/api/increment', async (req, res) => {
       const currentCount = dailyTraffic.get(targetDate) || 0;
       newCount = currentCount + 1;
       dailyTraffic.set(targetDate, newCount);
+      syncDailyTrafficToDb(targetDate, newCount); // Sync to DB (non-blocking)
       
       const now = new Date();
       const hour = now.getHours().toString().padStart(2, '0');
       const hourKey = `${targetDate}-${hour}`;
       const currentHourCount = hourlyTraffic.get(hourKey) || 0;
-      hourlyTraffic.set(hourKey, currentHourCount + 1);
+      const newHourCount = currentHourCount + 1;
+      hourlyTraffic.set(hourKey, newHourCount);
+      syncHourlyTrafficToDb(hourKey, newHourCount); // Sync to DB (non-blocking)
       
       const minute = Math.floor(now.getMinutes() / 10) * 10;
       const minuteKey = `${targetDate}-${hour}-${minute.toString().padStart(2, '0')}`;
       const currentMinuteCount = minuteTraffic.get(minuteKey) || 0;
-      minuteTraffic.set(minuteKey, currentMinuteCount + 1);
+      const newMinuteCount = currentMinuteCount + 1;
+      minuteTraffic.set(minuteKey, newMinuteCount);
+      syncMinuteTrafficToDb(minuteKey, newMinuteCount); // Sync to DB (non-blocking)
     } else {
       newCount = await incrementTraffic();
       broadcastTrafficData();
@@ -370,9 +456,17 @@ app.get('/api/traffic', (req, res) => {
   }
 });
 
-app.post('/api/reset', (req, res) => {
+app.post('/api/reset', async (req, res) => {
   try {
     resetTraffic();
+    // Clear database as well
+    try {
+      await db.delete(dailyTrafficTable);
+      await db.delete(hourlyTrafficTable);
+      await db.delete(minuteTrafficTable);
+    } catch (error) {
+      console.error('Error clearing database:', error);
+    }
     broadcastTrafficData();
     res.json({
       success: true,
@@ -390,7 +484,7 @@ app.post('/api/reset', (req, res) => {
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
-    storage: 'in-memory',
+    storage: 'in-memory with database persistence',
     currentTraffic: getCurrentTraffic(),
     totalTraffic: getTotalTraffic(),
     websocketClients: clients.size,
@@ -425,6 +519,7 @@ process.on('SIGTERM', () => {
   
   server.close(() => {
     console.log('HTTP server closed');
+    closeDatabase();
     process.exit(0);
   });
 });
