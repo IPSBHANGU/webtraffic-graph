@@ -18,13 +18,13 @@ async function makeRequest(targetDate = null) {
 }
 
 const dayPatterns = {
-  0: { name: 'Sunday', multiplier: 1.2, peakHours: [14, 15, 16] },
-  1: { name: 'Monday', multiplier: 1.5, peakHours: [9, 10, 11, 14, 15] },
-  2: { name: 'Tuesday', multiplier: 1.6, peakHours: [9, 10, 11, 14, 15] },
-  3: { name: 'Wednesday', multiplier: 1.4, peakHours: [9, 10, 11, 14, 15] },
-  4: { name: 'Thursday', multiplier: 1.5, peakHours: [9, 10, 11, 14, 15] },
-  5: { name: 'Friday', multiplier: 1.8, peakHours: [10, 11, 12, 13, 14, 15] },
-  6: { name: 'Saturday', multiplier: 0.8, peakHours: [12, 13, 14, 15, 16] },
+  0: { name: 'Sunday', multiplier: 0.5, peakHours: [14, 15, 16] },      // Very low weekend
+  1: { name: 'Monday', multiplier: 2.5, peakHours: [9, 10, 11, 14, 15] },  // High weekday start
+  2: { name: 'Tuesday', multiplier: 3.2, peakHours: [9, 10, 11, 14, 15] }, // Highest day
+  3: { name: 'Wednesday', multiplier: 1.8, peakHours: [9, 10, 11, 14, 15] }, // Lower mid-week
+  4: { name: 'Thursday', multiplier: 2.8, peakHours: [9, 10, 11, 14, 15] }, // High again
+  5: { name: 'Friday', multiplier: 3.5, peakHours: [10, 11, 12, 13, 14, 15] }, // Highest - end of week
+  6: { name: 'Saturday', multiplier: 0.6, peakHours: [12, 13, 14, 15, 16] }, // Low weekend
 };
 
 

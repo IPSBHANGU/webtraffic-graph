@@ -27,13 +27,10 @@ interface HourlyData {
   timestamp: string
 }
 
-type ViewMode = 'week' | 'day'
-
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8080'
 
 export function WebsiteTrafficChart() {
-  const [viewMode, setViewMode] = React.useState<ViewMode>('week')
   const [chartData, setChartData] = React.useState<TrafficData[]>([
     { date: "", day: "Mon", traffic: 0 },
     { date: "", day: "Tue", traffic: 0 },
@@ -212,14 +209,6 @@ export function WebsiteTrafficChart() {
         <div className="space-y-1">
           <div className="flex items-center justify-between">
             <p className="text-xs sm:text-sm font-medium text-white/70">Website Traffic</p>
-            <select
-              value={viewMode}
-              onChange={(e) => setViewMode(e.target.value as ViewMode)}
-              className="text-[10px] sm:text-xs px-2 py-1 rounded-md bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 focus:outline-none focus:ring-1 focus:ring-white/20 transition-colors"
-            >
-              <option value="week">Last 7 Days</option>
-              <option value="day">Current Day</option>
-            </select>
           </div>
 
           <div className="flex items-baseline gap-3">
@@ -267,16 +256,7 @@ export function WebsiteTrafficChart() {
         <ChartContainer config={chartConfig} className="h-[160px] sm:h-[180px] md:h-[190px] lg:h-[200px] w-full">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart 
-              data={viewMode === 'week' 
-                ? chartData.map(d => ({ label: d.day, traffic: d.traffic }))
-                : (() => {
-                    let cumulative = 0
-                    return hourlyData.map(h => {
-                      cumulative += h.traffic
-                      return { label: h.label, traffic: cumulative }
-                    })
-                  })()
-              } 
+              data={chartData.map(d => ({ label: d.day, traffic: d.traffic }))}
               margin={chartMargins}
             >
               <defs>
@@ -299,7 +279,7 @@ export function WebsiteTrafficChart() {
                 tickLine={false}
                 axisLine={false}
                 tickMargin={8}
-                interval={viewMode === 'day' ? Math.max(0, Math.floor((hourlyData.length || 1) / 12)) : 0}
+                interval={0}
                 tick={{ 
                   fill: "rgba(255,255,255,0.55)", 
                   fontSize: 10 
