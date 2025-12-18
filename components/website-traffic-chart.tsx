@@ -10,6 +10,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 // ===========================================
 // CONFIGURATION
@@ -19,12 +20,40 @@ const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:3001";
 
 // Days in correct order: Monday to Sunday
 const DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 // ===========================================
 // TYPES
 // ===========================================
+type TimePeriod = "day" | "week" | "month";
+
 interface DayData {
   day: string;
+  traffic: number;
+}
+
+interface HourlyData {
+  hour: number;
+  label: string;
+  traffic: number;
+}
+
+interface WeeklyData {
+  weekStart: string;
+  weekNumber: number;
+  year: number;
+  count: number;
+}
+
+interface MonthlyData {
+  monthStart: string;
+  year: number;
+  month: number;
+  count: number;
+}
+
+interface ChartDataPoint {
+  label: string;
   traffic: number;
 }
 
@@ -36,12 +65,54 @@ function formatNumber(num: number): string {
   return Math.round(num).toLocaleString();
 }
 
+// Convert 24-hour to 12-hour format
+function formatHour12(hour: number): string {
+  if (hour === 0) return "12 AM";
+  if (hour === 12) return "12 PM";
+  if (hour < 12) return `${hour} AM`;
+  return `${hour - 12} PM`;
+}
+
 // Sort data to always show Mon-Sun order
 function sortByDayOrder(data: DayData[]): DayData[] {
   const dayMap = new Map(data.map((d) => [d.day, d.traffic]));
   return DAY_ORDER.map((day) => ({
     day,
     traffic: dayMap.get(day) || 0,
+  }));
+}
+
+// Transform hourly data for chart - always show all 24 hours in 12-hour format
+function transformHourlyData(data: HourlyData[]): ChartDataPoint[] {
+  const hourMap = new Map(data.map((d) => [d.hour, d.traffic]));
+  return Array.from({ length: 24 }, (_, hour) => ({
+    label: formatHour12(hour),
+    traffic: hourMap.get(hour) || 0,
+  }));
+}
+
+// Transform weekly data for chart
+function transformWeeklyData(data: WeeklyData[]): ChartDataPoint[] {
+  return data.map((d) => ({
+    label: `W${d.weekNumber}`,
+    traffic: d.count,
+  }));
+}
+
+// Transform monthly data for chart - always show all 12 months (Jan-Dec)
+function transformMonthlyData(data: MonthlyData[]): ChartDataPoint[] {
+  const monthMap = new Map(data.map((d) => [d.month, d.count]));
+  return MONTH_NAMES.map((name, index) => ({
+    label: name,
+    traffic: monthMap.get(index + 1) || 0,
+  }));
+}
+
+// Transform daily data for chart
+function transformDailyData(data: DayData[]): ChartDataPoint[] {
+  return data.map((d) => ({
+    label: d.day,
+    traffic: d.traffic,
   }));
 }
 
@@ -151,9 +222,16 @@ function ChartSkeleton() {
 export function WebsiteTrafficChart() {
   // ---- STATE ----
   const [isLoading, setIsLoading] = React.useState(true);
-  const [chartData, setChartData] = React.useState<DayData[]>(
+  const [timePeriod, setTimePeriod] = React.useState<TimePeriod>("week");
+  
+  // Raw data from API
+  const [dailyData, setDailyData] = React.useState<DayData[]>(
     DAY_ORDER.map((day) => ({ day, traffic: 0 }))
   );
+  const [hourlyData, setHourlyData] = React.useState<HourlyData[]>([]);
+  const [weeklyData, setWeeklyData] = React.useState<WeeklyData[]>([]);
+  const [monthlyData, setMonthlyData] = React.useState<MonthlyData[]>([]);
+  
   const [totalTraffic, setTotalTraffic] = React.useState(0);
   const [todayTraffic, setTodayTraffic] = React.useState(0);
   const [percentChange, setPercentChange] = React.useState(0);
@@ -193,15 +271,30 @@ export function WebsiteTrafficChart() {
   // ---- PROCESS INCOMING DATA ----
   const processData = React.useCallback(
     (data: any) => {
+      // Process daily data
       if (data.data && Array.isArray(data.data)) {
-        // Sort to Mon-Sun order
         const sorted = sortByDayOrder(
           data.data.map((d: any) => ({
             day: d.day,
             traffic: d.traffic || 0,
           }))
         );
-        setChartData(sorted);
+        setDailyData(sorted);
+      }
+
+      // Process hourly data
+      if (data.hourlyData && Array.isArray(data.hourlyData)) {
+        setHourlyData(data.hourlyData);
+      }
+
+      // Process weekly data
+      if (data.weeklyData && Array.isArray(data.weeklyData)) {
+        setWeeklyData(data.weeklyData);
+      }
+
+      // Process monthly data
+      if (data.monthlyData && Array.isArray(data.monthlyData)) {
+        setMonthlyData(data.monthlyData);
       }
 
       setTotalTraffic(data.total || 0);
@@ -289,10 +382,49 @@ export function WebsiteTrafficChart() {
     };
   }, [fetchData, processData]);
 
-  // ---- LOADING STATE ----
-  // if (isLoading) {
-  //   return <ChartSkeleton />;
-  // }
+  // ---- GET CHART DATA BASED ON TIME PERIOD ----
+  const chartData = React.useMemo((): ChartDataPoint[] => {
+    switch (timePeriod) {
+      case "day":
+        // Always shows all 24 hours in 12-hour format
+        return transformHourlyData(hourlyData);
+      case "week":
+        return transformDailyData(dailyData);
+      case "month":
+        // Always shows all 12 months (Jan-Dec)
+        return transformMonthlyData(monthlyData);
+      default:
+        return transformDailyData(dailyData);
+    }
+  }, [timePeriod, dailyData, hourlyData, monthlyData]);
+
+  // ---- GET PERIOD LABEL ----
+  const periodLabel = React.useMemo(() => {
+    switch (timePeriod) {
+      case "day":
+        return "Today";
+      case "week":
+        return "Last 7 Days";
+      case "month":
+        return "This Year";
+      default:
+        return "Last 7 Days";
+    }
+  }, [timePeriod]);
+
+  // ---- GET PERIOD TOTAL ----
+  const periodTotal = React.useMemo(() => {
+    switch (timePeriod) {
+      case "day":
+        return todayTraffic;
+      case "week":
+        return totalTraffic;
+      case "month":
+        return monthlyData.reduce((sum, m) => sum + m.count, 0);
+      default:
+        return totalTraffic;
+    }
+  }, [timePeriod, todayTraffic, totalTraffic, monthlyData]);
 
   // ===========================================
   // RENDER
@@ -301,32 +433,46 @@ export function WebsiteTrafficChart() {
     <Card className="overflow-hidden rounded-2xl border-white/10 bg-[#0b1220] text-white">
       <CardHeader className="pb-2 p-6">
         <div className="space-y-2">
-          {/* Title */}
+          {/* Title row with tabs */}
           <div className="flex items-center justify-between">
             <p className="text-sm font-medium text-white/70">Website Traffic</p>
-            {isConnected ? (
-              <div className="flex items-center gap-1.5">
-                <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-                <span className="text-xs text-emerald-400/70">Live</span>
-              </div>
-            ) : (
-              <span className="text-xs text-yellow-400/70">
-                Reconnecting...
-              </span>
-            )}
+            <div className="flex items-center gap-3">
+              {/* Compact Tabs */}
+              <Tabs
+                value={timePeriod}
+                onValueChange={(v) => setTimePeriod(v as TimePeriod)}
+              >
+                <TabsList className="h-7 p-0.5 gap-0.5">
+                  <TabsTrigger value="day" className="h-6 px-2 text-[11px]">Day</TabsTrigger>
+                  <TabsTrigger value="week" className="h-6 px-2 text-[11px]">Week</TabsTrigger>
+                  <TabsTrigger value="month" className="h-6 px-2 text-[11px]">Month</TabsTrigger>
+                </TabsList>
+              </Tabs>
+              
+              {isConnected ? (
+                <div className="flex items-center gap-1.5">
+                  <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="text-xs text-emerald-400/70">Live</span>
+                </div>
+              ) : (
+                <span className="text-xs text-yellow-400/70">
+                  Reconnecting...
+                </span>
+              )}
+            </div>
           </div>
 
           {/* Total traffic - smooth counter */}
           <SmoothCounter
-            value={totalTraffic}
+            value={periodTotal}
             className="text-4xl font-semibold tracking-tight block"
           />
 
           {/* Stats row */}
           <div className="flex items-center gap-4 text-xs">
             <span className="text-white/60">
-              Last 7 Days
-              {percentChange !== 0 && (
+              {periodLabel}
+              {percentChange !== 0 && timePeriod === "week" && (
                 <span
                   className={`ml-1 font-medium ${
                     percentChange >= 0 ? "text-emerald-400" : "text-red-400"
@@ -338,23 +484,49 @@ export function WebsiteTrafficChart() {
               )}
             </span>
 
-            <span className="text-white/50">
-              Today:{" "}
-              <SmoothCounter
-                value={todayTraffic}
-                className="text-white/70 font-medium"
-              />
-              <span
-                className={`ml-1.5 font-medium ${
-                  requestsPerSecond > 0 ? "text-emerald-400" : "text-white/40"
-                }`}
-                style={{ fontVariantNumeric: "tabular-nums" }}
-              >
-                {requestsPerSecond > 0
-                  ? `+${requestsPerSecond.toFixed(1)}/sec`
-                  : "0/sec"}
+            {timePeriod === "day" && (
+              <span className="text-white/50">
+                Now:{" "}
+                <span
+                  className={`ml-1.5 font-medium ${
+                    requestsPerSecond > 0 ? "text-emerald-400" : "text-white/40"
+                  }`}
+                  style={{ fontVariantNumeric: "tabular-nums" }}
+                >
+                  {requestsPerSecond > 0
+                    ? `+${requestsPerSecond.toFixed(1)}/sec`
+                    : "0/sec"}
+                </span>
               </span>
-            </span>
+            )}
+
+            {timePeriod === "week" && (
+              <span className="text-white/50">
+                Today:{" "}
+                <SmoothCounter
+                  value={todayTraffic}
+                  className="text-white/70 font-medium"
+                />
+                <span
+                  className={`ml-1.5 font-medium ${
+                    requestsPerSecond > 0 ? "text-emerald-400" : "text-white/40"
+                  }`}
+                  style={{ fontVariantNumeric: "tabular-nums" }}
+                >
+                  {requestsPerSecond > 0
+                    ? `+${requestsPerSecond.toFixed(1)}/sec`
+                    : "0/sec"}
+                </span>
+              </span>
+            )}
+
+            {timePeriod === "month" && (
+              <span className="text-white/50">
+                {monthlyData.length > 0 
+                  ? `${monthlyData.length} months with data`
+                  : "No data yet"}
+              </span>
+            )}
           </div>
         </div>
       </CardHeader>
@@ -381,12 +553,12 @@ export function WebsiteTrafficChart() {
               </defs>
 
               <XAxis
-                dataKey="day"
+                dataKey="label"
                 axisLine={false}
                 tickLine={false}
                 tick={{ fill: "rgba(255,255,255,0.5)", fontSize: 12 }}
                 tickMargin={10}
-                interval={0}
+                interval={timePeriod === "day" ? 5 : 0}
                 padding={{ left: 10, right: 10 }}
               />
 
