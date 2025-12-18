@@ -8,6 +8,13 @@
       "when": 1766020051686,
       "tag": "0000_known_spyke",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1766079475608,
+      "tag": "0001_bouncy_jane_foster",
+      "breakpoints": true
     }
   ]
 }

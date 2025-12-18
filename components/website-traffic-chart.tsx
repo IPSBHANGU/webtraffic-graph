@@ -14,8 +14,8 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 // ===========================================
 // CONFIGURATION
 // ===========================================
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://webtraffic-graph.onrender.com";
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://webtraffic-graph.onrender.com";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:3001";
 
 // Days in correct order: Monday to Sunday
 const DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];

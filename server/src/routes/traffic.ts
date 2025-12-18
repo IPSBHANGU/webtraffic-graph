@@ -39,15 +39,21 @@ export function createTrafficRouter(trafficService: TrafficService) {
 
   router.get("/traffic", async (req: Request, res: Response) => {
     try {
-      const [data, total, currentDay] = await Promise.all([
+      const [data, total, currentDay, hourlyData, weeklyData, monthlyData] = await Promise.all([
         trafficService.getLast7Days(),
         trafficService.getTotalTraffic(),
         trafficService.getTodayTraffic(),
+        trafficService.getHourlyData(),
+        trafficService.getWeeklyData(),
+        trafficService.getMonthlyData(),
       ]);
 
       res.json({
         success: true,
-        data,
+        data, // Daily data (last 7 days)
+        hourlyData, // Hourly data for today
+        weeklyData, // Weekly aggregated data
+        monthlyData, // Monthly aggregated data
         total,
         currentDay,
         percentageChange: 0,

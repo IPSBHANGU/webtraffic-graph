@@ -1,5 +1,5 @@
 import { eq, sql, gte, lte, and } from "drizzle-orm";
-import { db, trafficMinute, trafficDaily } from "../db/index.js";
+import { db, trafficMinute, trafficHourly, trafficDaily, trafficWeekly, trafficMonthly } from "../db/index.js";
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -14,7 +14,14 @@ export class TrafficService {
 
   constructor() {
     this.flushTimer = setInterval(() => this.flushToDatabase(), 4000);
-    console.log("📊 Traffic service started");
+    // Run aggregations every minute
+    setInterval(() => this.aggregateToHour(), 60000);
+    // Run aggregations every hour
+    setInterval(() => this.aggregateToDay(), 3600000);
+    // Run aggregations every day at midnight
+    setInterval(() => this.aggregateToWeek(), 86400000);
+    setInterval(() => this.aggregateToMonth(), 86400000);
+    console.log("📊 Traffic service started with real-time aggregation");
   }
 
   recordHit(targetDate?: Date) {
@@ -79,12 +86,262 @@ export class TrafficService {
         );
 
         this.cache.lastUpdate = 0;
+        
+        // Trigger hour aggregation check after saving minute data
+        this.checkAndAggregateToHour(timestamp);
       } catch (err: any) {
         console.error(`DB error for ${dateKey}:`, err.message);
         const current = this.pendingByDate.get(dateKey) || 0;
         this.pendingByDate.set(dateKey, current + count);
       }
     }
+  }
+
+  // Aggregate 60 minutes into 1 hour
+  private async checkAndAggregateToHour(minuteTimestamp: Date) {
+    const hourStart = new Date(minuteTimestamp);
+    hourStart.setMinutes(0, 0, 0);
+    
+    // Check if we have 60 minutes for this hour
+    const hourEnd = new Date(hourStart);
+    hourEnd.setMinutes(59, 59, 999);
+    
+    try {
+      const minuteSum = await db
+        .select({ total: sql<number>`COALESCE(SUM(${trafficMinute.count}), 0)` })
+        .from(trafficMinute)
+        .where(
+          and(
+            gte(trafficMinute.timestamp, hourStart),
+            lte(trafficMinute.timestamp, hourEnd)
+          )
+        );
+      
+      const total = Number(minuteSum[0]?.total) || 0;
+      
+      if (total > 0) {
+        await db
+          .insert(trafficHourly)
+          .values({
+            timestamp: hourStart,
+            count: total,
+            updatedAt: new Date(),
+          })
+          .onConflictDoUpdate({
+            target: trafficHourly.timestamp,
+            set: {
+              count: total,
+              updatedAt: new Date(),
+            },
+          });
+        
+        // Trigger day aggregation
+        this.checkAndAggregateToDay(hourStart);
+      }
+    } catch (err: any) {
+      console.error("Error aggregating to hour:", err.message);
+    }
+  }
+
+  // Aggregate 24 hours into 1 day
+  private async checkAndAggregateToDay(hourTimestamp: Date) {
+    const dayStart = new Date(hourTimestamp);
+    dayStart.setHours(0, 0, 0, 0);
+    
+    const dayEnd = new Date(dayStart);
+    dayEnd.setHours(23, 59, 59, 999);
+    
+    try {
+      const hourSum = await db
+        .select({ total: sql<number>`COALESCE(SUM(${trafficHourly.count}), 0)` })
+        .from(trafficHourly)
+        .where(
+          and(
+            gte(trafficHourly.timestamp, dayStart),
+            lte(trafficHourly.timestamp, dayEnd)
+          )
+        );
+      
+      const total = Number(hourSum[0]?.total) || 0;
+      
+      if (total > 0) {
+        await db
+          .insert(trafficDaily)
+          .values({
+            date: dayStart,
+            dayOfWeek: dayStart.getDay(),
+            count: total,
+            updatedAt: new Date(),
+          })
+          .onConflictDoUpdate({
+            target: trafficDaily.date,
+            set: {
+              count: total,
+              updatedAt: new Date(),
+            },
+          });
+        
+        // Trigger week and month aggregation
+        this.checkAndAggregateToWeek(dayStart);
+        this.checkAndAggregateToMonth(dayStart);
+      }
+    } catch (err: any) {
+      console.error("Error aggregating to day:", err.message);
+    }
+  }
+
+  // Aggregate 7 days into 1 week
+  private async checkAndAggregateToWeek(dayTimestamp: Date) {
+    const date = new Date(dayTimestamp);
+    date.setHours(0, 0, 0, 0);
+    
+    // Get week start (Sunday)
+    const dayOfWeek = date.getDay();
+    const weekStart = new Date(date);
+    weekStart.setDate(date.getDate() - dayOfWeek);
+    weekStart.setHours(0, 0, 0, 0);
+    
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 6);
+    weekEnd.setHours(23, 59, 59, 999);
+    
+    try {
+      const daySum = await db
+        .select({ total: sql<number>`COALESCE(SUM(${trafficDaily.count}), 0)` })
+        .from(trafficDaily)
+        .where(
+          and(
+            gte(trafficDaily.date, weekStart),
+            lte(trafficDaily.date, weekEnd)
+          )
+        );
+      
+      const total = Number(daySum[0]?.total) || 0;
+      
+      if (total > 0) {
+        const year = weekStart.getFullYear();
+        const weekNumber = this.getWeekNumber(weekStart);
+        
+        // Check if week exists, then update or insert
+        const existing = await db
+          .select()
+          .from(trafficWeekly)
+          .where(
+            and(
+              eq(trafficWeekly.year, year),
+              eq(trafficWeekly.weekNumber, weekNumber)
+            )
+          )
+          .limit(1);
+        
+        if (existing.length > 0) {
+          await db
+            .update(trafficWeekly)
+            .set({
+              count: total,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(trafficWeekly.year, year),
+                eq(trafficWeekly.weekNumber, weekNumber)
+              )
+            );
+        } else {
+          await db.insert(trafficWeekly).values({
+            weekStart,
+            weekNumber,
+            year,
+            count: total,
+            updatedAt: new Date(),
+          });
+        }
+      }
+    } catch (err: any) {
+      console.error("Error aggregating to week:", err.message);
+    }
+  }
+
+  // Aggregate ~30 days into 1 month
+  private async checkAndAggregateToMonth(dayTimestamp: Date) {
+    const date = new Date(dayTimestamp);
+    date.setHours(0, 0, 0, 0);
+    
+    // Get month start (first day of month)
+    const monthStart = new Date(date.getFullYear(), date.getMonth(), 1, 0, 0, 0, 0);
+    
+    // Get month end (last day of month)
+    const monthEnd = new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999);
+    
+    try {
+      const daySum = await db
+        .select({ total: sql<number>`COALESCE(SUM(${trafficDaily.count}), 0)` })
+        .from(trafficDaily)
+        .where(
+          and(
+            gte(trafficDaily.date, monthStart),
+            lte(trafficDaily.date, monthEnd)
+          )
+        );
+      
+      const total = Number(daySum[0]?.total) || 0;
+      
+      if (total > 0) {
+        await db
+          .insert(trafficMonthly)
+          .values({
+            monthStart,
+            year: monthStart.getFullYear(),
+            month: monthStart.getMonth() + 1, // 1-12
+            count: total,
+            updatedAt: new Date(),
+          })
+          .onConflictDoUpdate({
+            target: trafficMonthly.monthStart,
+            set: {
+              count: total,
+              updatedAt: new Date(),
+            },
+          });
+      }
+    } catch (err: any) {
+      console.error("Error aggregating to month:", err.message);
+    }
+  }
+
+  private getWeekNumber(date: Date): number {
+    const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+    const dayNum = d.getUTCDay() || 7;
+    d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+    return Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+  }
+
+  // Periodic aggregation functions (backup in case real-time misses)
+  private async aggregateToHour() {
+    const now = new Date();
+    const oneHourAgo = new Date(now.getTime() - 3600000);
+    oneHourAgo.setMinutes(0, 0, 0);
+    await this.checkAndAggregateToHour(oneHourAgo);
+  }
+
+  private async aggregateToDay() {
+    const now = new Date();
+    const oneDayAgo = new Date(now.getTime() - 86400000);
+    oneDayAgo.setHours(0, 0, 0, 0);
+    await this.checkAndAggregateToDay(oneDayAgo);
+  }
+
+  private async aggregateToWeek() {
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    await this.checkAndAggregateToWeek(now);
+  }
+
+  private async aggregateToMonth() {
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    await this.checkAndAggregateToMonth(now);
   }
 
   private getPendingForDate(dateKey: string): number {
@@ -182,16 +439,91 @@ export class TrafficService {
 
   async getHourlyData() {
     const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
     const result: Array<{ hour: number; label: string; traffic: number }> = [];
 
-    for (let h = 0; h <= now.getHours(); h++) {
-      result.push({
-        hour: h,
-        label: `${h.toString().padStart(2, "0")}:00`,
-        traffic: 0,
+    try {
+      const hourlyData = await db
+        .select()
+        .from(trafficHourly)
+        .where(
+          and(
+            gte(trafficHourly.timestamp, todayStart),
+            lte(trafficHourly.timestamp, now)
+          )
+        )
+        .orderBy(trafficHourly.timestamp);
+
+      const hourlyMap = new Map<number, number>();
+      hourlyData.forEach((h) => {
+        const hour = h.timestamp.getHours();
+        hourlyMap.set(hour, h.count);
       });
+
+      for (let h = 0; h <= now.getHours(); h++) {
+        result.push({
+          hour: h,
+          label: `${h.toString().padStart(2, "0")}:00`,
+          traffic: hourlyMap.get(h) || 0,
+        });
+      }
+    } catch (err) {
+      console.error("Error fetching hourly data:", err);
+      for (let h = 0; h <= now.getHours(); h++) {
+        result.push({
+          hour: h,
+          label: `${h.toString().padStart(2, "0")}:00`,
+          traffic: 0,
+        });
+      }
     }
     return result;
+  }
+
+  async getWeeklyData() {
+    const now = new Date();
+    const sixWeeksAgo = new Date(now.getTime() - 42 * 24 * 60 * 60 * 1000);
+    
+    try {
+      const weeklyData = await db
+        .select()
+        .from(trafficWeekly)
+        .where(gte(trafficWeekly.weekStart, sixWeeksAgo))
+        .orderBy(trafficWeekly.weekStart);
+      
+      return weeklyData.map((w) => ({
+        weekStart: w.weekStart.toISOString().split("T")[0],
+        weekNumber: w.weekNumber,
+        year: w.year,
+        count: w.count,
+      }));
+    } catch (err) {
+      console.error("Error fetching weekly data:", err);
+      return [];
+    }
+  }
+
+  async getMonthlyData() {
+    const now = new Date();
+    const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 6, 1);
+    
+    try {
+      const monthlyData = await db
+        .select()
+        .from(trafficMonthly)
+        .where(gte(trafficMonthly.monthStart, sixMonthsAgo))
+        .orderBy(trafficMonthly.monthStart);
+      
+      return monthlyData.map((m) => ({
+        monthStart: m.monthStart.toISOString().split("T")[0],
+        year: m.year,
+        month: m.month,
+        count: m.count,
+      }));
+    } catch (err) {
+      console.error("Error fetching monthly data:", err);
+      return [];
+    }
   }
 
   getPendingCount() {
