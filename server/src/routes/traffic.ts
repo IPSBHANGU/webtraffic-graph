@@ -85,5 +85,81 @@ export function createTrafficRouter(trafficService: TrafficService) {
     }
   });
 
+  // Custom date range query
+  router.get("/custom-range", async (req: Request, res: Response) => {
+    try {
+      const startDate = req.query.start as string;
+      const endDate = req.query.end as string;
+
+      if (!startDate || !endDate) {
+        return res.status(400).json({
+          success: false,
+          error: "start and end date parameters are required (YYYY-MM-DD format)",
+        });
+      }
+
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid date format (use YYYY-MM-DD)",
+        });
+      }
+
+      const data = await trafficService.getCustomDateRangeData(start, end);
+      const total = data.reduce((sum, d) => sum + d.traffic, 0);
+
+      res.json({
+        success: true,
+        data,
+        total,
+        startDate,
+        endDate,
+        timestamp: Date.now(),
+      });
+    } catch (err) {
+      console.error("Error fetching custom range:", err);
+      res.status(500).json({ success: false, error: "Failed to fetch custom range data" });
+    }
+  });
+
+  // Multiple specific dates query
+  router.post("/custom-dates", async (req: Request, res: Response) => {
+    try {
+      const { dates } = req.body;
+
+      if (!dates || !Array.isArray(dates) || dates.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: "dates array is required in request body",
+        });
+      }
+
+      const parsedDates = dates.map((d: string) => new Date(d));
+      
+      if (parsedDates.some((d: Date) => isNaN(d.getTime()))) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid date format in array (use YYYY-MM-DD)",
+        });
+      }
+
+      const data = await trafficService.getMultipleDatesData(parsedDates);
+      const total = data.reduce((sum, d) => sum + d.traffic, 0);
+
+      res.json({
+        success: true,
+        data,
+        total,
+        timestamp: Date.now(),
+      });
+    } catch (err) {
+      console.error("Error fetching custom dates:", err);
+      res.status(500).json({ success: false, error: "Failed to fetch custom dates data" });
+    }
+  });
+
   return router;
 }

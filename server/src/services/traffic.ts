@@ -534,6 +534,58 @@ export class TrafficService {
     return total;
   }
 
+  async getCustomDateRangeData(startDate: Date, endDate: Date) {
+    const result: Array<{ date: string; day: string; traffic: number }> = [];
+    
+    // Normalize dates
+    const start = new Date(startDate);
+    start.setHours(0, 0, 0, 0);
+    
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    
+    // Get all days in the range
+    const current = new Date(start);
+    while (current <= end) {
+      const traffic = await this.getTrafficForDate(current);
+      const dateStr = this.formatDate(current);
+      
+      result.push({
+        date: dateStr,
+        day: DAY_NAMES[current.getDay()],
+        traffic,
+      });
+      
+      // Move to next day
+      current.setDate(current.getDate() + 1);
+    }
+    
+    return result;
+  }
+
+  async getMultipleDatesData(dates: Date[]) {
+    const result: Array<{ date: string; day: string; traffic: number }> = [];
+    
+    for (const date of dates) {
+      const normalized = new Date(date);
+      normalized.setHours(0, 0, 0, 0);
+      
+      const traffic = await this.getTrafficForDate(normalized);
+      const dateStr = this.formatDate(normalized);
+      
+      result.push({
+        date: dateStr,
+        day: DAY_NAMES[normalized.getDay()],
+        traffic,
+      });
+    }
+    
+    // Sort by date
+    result.sort((a, b) => a.date.localeCompare(b.date));
+    
+    return result;
+  }
+
   async shutdown() {
     if (this.flushTimer) clearInterval(this.flushTimer);
     await this.flushToDatabase();
