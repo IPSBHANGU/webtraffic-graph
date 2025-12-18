@@ -26,6 +26,7 @@ const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Se
 // TYPES
 // ===========================================
 type TimePeriod = "day" | "week" | "month";
+type DeviceMode = "unified" | "split";
 
 interface DayData {
   day: string;
@@ -55,6 +56,8 @@ interface MonthlyData {
 interface ChartDataPoint {
   label: string;
   traffic: number;
+  ios?: number;
+  android?: number;
 }
 
 // ===========================================
@@ -223,6 +226,7 @@ export function WebsiteTrafficChart() {
   // ---- STATE ----
   const [isLoading, setIsLoading] = React.useState(true);
   const [timePeriod, setTimePeriod] = React.useState<TimePeriod>("week");
+  const [deviceMode, setDeviceMode] = React.useState<DeviceMode>("unified");
   
   // Raw data from API
   const [dailyData, setDailyData] = React.useState<DayData[]>(
@@ -384,19 +388,35 @@ export function WebsiteTrafficChart() {
 
   // ---- GET CHART DATA BASED ON TIME PERIOD ----
   const chartData = React.useMemo((): ChartDataPoint[] => {
+    let baseData: ChartDataPoint[];
+    
     switch (timePeriod) {
       case "day":
         // Always shows all 24 hours in 12-hour format
-        return transformHourlyData(hourlyData);
+        baseData = transformHourlyData(hourlyData);
+        break;
       case "week":
-        return transformDailyData(dailyData);
+        baseData = transformDailyData(dailyData);
+        break;
       case "month":
         // Always shows all 12 months (Jan-Dec)
-        return transformMonthlyData(monthlyData);
+        baseData = transformMonthlyData(monthlyData);
+        break;
       default:
-        return transformDailyData(dailyData);
+        baseData = transformDailyData(dailyData);
     }
-  }, [timePeriod, dailyData, hourlyData, monthlyData]);
+    
+    // Add iOS and Android split data (65% iOS, 35% Android)
+    if (deviceMode === "split") {
+      return baseData.map(point => ({
+        ...point,
+        ios: Math.round(point.traffic * 0.65),
+        android: Math.round(point.traffic * 0.35),
+      }));
+    }
+    
+    return baseData;
+  }, [timePeriod, dailyData, hourlyData, monthlyData, deviceMode]);
 
   // ---- GET PERIOD LABEL ----
   const periodLabel = React.useMemo(() => {
@@ -433,11 +453,32 @@ export function WebsiteTrafficChart() {
     <Card className="overflow-hidden rounded-2xl border-white/10 bg-[#0b1220] text-white">
       <CardHeader className="pb-2 p-6">
         <div className="space-y-2">
-          {/* Title row with tabs */}
+          {/* Title row with Live indicator */}
           <div className="flex items-center justify-between">
             <p className="text-sm font-medium text-white/70">Website Traffic</p>
-            <div className="flex items-center gap-3">
-              {/* Compact Tabs */}
+            {isConnected ? (
+              <div className="flex items-center gap-1.5">
+                <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="text-xs text-emerald-400/70">Live</span>
+              </div>
+            ) : (
+              <span className="text-xs text-yellow-400/70">
+                Reconnecting...
+              </span>
+            )}
+          </div>
+
+          {/* Total + Tabs row */}
+          <div className="flex items-start justify-between">
+            {/* Total traffic - smooth counter */}
+            <SmoothCounter
+              value={periodTotal}
+              className="text-4xl font-semibold tracking-tight block"
+            />
+
+            {/* Tab bars */}
+            <div className="flex flex-col gap-1.5 items-end">
+              {/* Time Period Tabs */}
               <Tabs
                 value={timePeriod}
                 onValueChange={(v) => setTimePeriod(v as TimePeriod)}
@@ -448,25 +489,19 @@ export function WebsiteTrafficChart() {
                   <TabsTrigger value="month" className="h-6 px-2 text-[11px]">Month</TabsTrigger>
                 </TabsList>
               </Tabs>
-              
-              {isConnected ? (
-                <div className="flex items-center gap-1.5">
-                  <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-                  <span className="text-xs text-emerald-400/70">Live</span>
-                </div>
-              ) : (
-                <span className="text-xs text-yellow-400/70">
-                  Reconnecting...
-                </span>
-              )}
+
+              {/* Device Mode Tabs */}
+              <Tabs
+                value={deviceMode}
+                onValueChange={(v) => setDeviceMode(v as DeviceMode)}
+              >
+                <TabsList className="h-7 p-0.5 gap-0.5">
+                  <TabsTrigger value="unified" className="h-6 px-2 text-[11px]">Unified</TabsTrigger>
+                  <TabsTrigger value="split" className="h-6 px-2 text-[11px]">Split</TabsTrigger>
+                </TabsList>
+              </Tabs>
             </div>
           </div>
-
-          {/* Total traffic - smooth counter */}
-          <SmoothCounter
-            value={periodTotal}
-            className="text-4xl font-semibold tracking-tight block"
-          />
 
           {/* Stats row */}
           <div className="flex items-center gap-4 text-xs">
@@ -540,6 +575,7 @@ export function WebsiteTrafficChart() {
               margin={{ left: 10, right: 10, top: 10, bottom: 0 }}
             >
               <defs>
+                {/* Unified gradient (blue) */}
                 <linearGradient
                   id="trafficGradient"
                   x1="0"
@@ -549,6 +585,28 @@ export function WebsiteTrafficChart() {
                 >
                   <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.4} />
                   <stop offset="100%" stopColor="#3b82f6" stopOpacity={0} />
+                </linearGradient>
+                {/* iOS gradient (blue) */}
+                <linearGradient
+                  id="iosGradient"
+                  x1="0"
+                  y1="0"
+                  x2="0"
+                  y2="1"
+                >
+                  <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.4} />
+                  <stop offset="100%" stopColor="#3b82f6" stopOpacity={0} />
+                </linearGradient>
+                {/* Android gradient (orange) */}
+                <linearGradient
+                  id="androidGradient"
+                  x1="0"
+                  y1="0"
+                  x2="0"
+                  y2="1"
+                >
+                  <stop offset="0%" stopColor="#f97316" stopOpacity={0.4} />
+                  <stop offset="100%" stopColor="#f97316" stopOpacity={0} />
                 </linearGradient>
               </defs>
 
@@ -568,6 +626,35 @@ export function WebsiteTrafficChart() {
                 cursor={{ stroke: "rgba(255,255,255,0.1)", strokeWidth: 1 }}
                 content={({ active, payload, label }) => {
                   if (!active || !payload?.length) return null;
+                  
+                  if (deviceMode === "split") {
+                    const iosValue = payload.find(p => p.dataKey === "ios")?.value as number;
+                    const androidValue = payload.find(p => p.dataKey === "android")?.value as number;
+                    return (
+                      <div className="rounded-lg border border-white/10 bg-[#0b1220] px-3 py-2 shadow-lg">
+                        <p className="text-white/60 text-xs mb-1">{label}</p>
+                        <div className="flex items-center gap-2 mb-1">
+                          <div className="h-2 w-2 rounded-full bg-blue-500" />
+                          <p
+                            className="text-white font-semibold text-sm"
+                            style={{ fontVariantNumeric: "tabular-nums" }}
+                          >
+                            iOS: {formatNumber(iosValue)} visits
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="h-2 w-2 rounded-full bg-orange-500" />
+                          <p
+                            className="text-white font-semibold text-sm"
+                            style={{ fontVariantNumeric: "tabular-nums" }}
+                          >
+                            Android: {formatNumber(androidValue)} visits
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  }
+                  
                   const value = payload[0]?.value as number;
                   return (
                     <div className="rounded-lg border border-white/10 bg-[#0b1220] px-3 py-2 shadow-lg">
@@ -583,19 +670,60 @@ export function WebsiteTrafficChart() {
                 }}
               />
 
-              <Area
-                type="monotone"
-                dataKey="traffic"
-                stroke="#3b82f6"
-                strokeWidth={2}
-                fill="url(#trafficGradient)"
-                animationDuration={300}
-                animationEasing="ease-out"
-                isAnimationActive={true}
-              />
+              {deviceMode === "unified" ? (
+                <Area
+                  type="monotone"
+                  dataKey="traffic"
+                  stroke="#3b82f6"
+                  strokeWidth={2}
+                  fill="url(#trafficGradient)"
+                  animationDuration={300}
+                  animationEasing="ease-out"
+                  isAnimationActive={true}
+                />
+              ) : (
+                <>
+                  <Area
+                    type="monotone"
+                    dataKey="ios"
+                    stroke="#3b82f6"
+                    strokeWidth={2}
+                    fill="url(#iosGradient)"
+                    animationDuration={300}
+                    animationEasing="ease-out"
+                    isAnimationActive={true}
+                    name="iOS"
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="android"
+                    stroke="#f97316"
+                    strokeWidth={2}
+                    fill="url(#androidGradient)"
+                    animationDuration={300}
+                    animationEasing="ease-out"
+                    isAnimationActive={true}
+                    name="Android"
+                  />
+                </>
+              )}
             </AreaChart>
           </ResponsiveContainer>
         </div>
+
+        {/* Device Legend - only show in split mode */}
+        {deviceMode === "split" && (
+          <div className="w-full flex items-center justify-center gap-6 mt-3 pt-3 border-t border-white/5">
+            <div className="flex items-center gap-1.5">
+              <div className="h-2.5 w-2.5 rounded-full bg-blue-500" />
+              <span className="text-xs text-white/70">iOS</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="h-2.5 w-2.5 rounded-full bg-orange-500" />
+              <span className="text-xs text-white/70">Android</span>
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
