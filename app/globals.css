@@ -2,6 +2,91 @@
 @tailwind components;
 @tailwind utilities;
 
+/* React Day Picker dark theme styles */
+.rdp-dark {
+  --rdp-accent-color: #3b82f6;
+  --rdp-accent-background-color: rgba(59, 130, 246, 0.2);
+  --rdp-day-height: 32px;
+  --rdp-day-width: 32px;
+  --rdp-range_start-color: #3b82f6;
+  --rdp-range_end-color: #3b82f6;
+  --rdp-range_middle-background-color: rgba(59, 130, 246, 0.2);
+  --rdp-range_middle-color: white;
+  --rdp-selected-color: white;
+  --rdp-today-color: white;
+  color: white;
+  background: transparent !important;
+}
+
+.rdp-dark * {
+  background-color: transparent;
+}
+
+.rdp-dark .rdp-month_caption {
+  color: white;
+  font-weight: 500;
+}
+
+.rdp-dark .rdp-weekday {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 0.75rem;
+}
+
+.rdp-dark .rdp-day {
+  background: transparent !important;
+}
+
+.rdp-dark .rdp-day_button {
+  color: white;
+  border-radius: 6px;
+  background: transparent;
+}
+
+.rdp-dark .rdp-day_button:hover {
+  background-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+.rdp-dark .rdp-selected .rdp-day_button,
+.rdp-dark .rdp-range_start .rdp-day_button,
+.rdp-dark .rdp-range_end .rdp-day_button {
+  background-color: var(--rdp-accent-color) !important;
+  color: white !important;
+}
+
+.rdp-dark .rdp-range_middle .rdp-day_button {
+  background-color: rgba(59, 130, 246, 0.2) !important;
+  color: white !important;
+}
+
+.rdp-dark .rdp-today .rdp-day_button {
+  background-color: rgba(255, 255, 255, 0.1);
+  font-weight: bold;
+}
+
+.rdp-dark .rdp-outside .rdp-day_button {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.rdp-dark .rdp-button_previous,
+.rdp-dark .rdp-button_next {
+  color: white;
+  opacity: 0.7;
+}
+
+.rdp-dark .rdp-button_previous:hover,
+.rdp-dark .rdp-button_next:hover {
+  opacity: 1;
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.rdp-dark .rdp-months,
+.rdp-dark .rdp-month,
+.rdp-dark .rdp-month_grid,
+.rdp-dark .rdp-weeks,
+.rdp-dark .rdp-week {
+  background: transparent !important;
+}
+
 @layer base {
   :root {
     --background: 0 0% 100%;
