@@ -26,8 +26,8 @@ import type { DateRange } from "react-day-picker";
 // ===========================================
 // CONFIGURATION
 // ===========================================
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:3001";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://webtraffic-graph.onrender.com";
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://webtraffic-graph.onrender.com";
 
 // Days in correct order: Monday to Sunday
 const DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -65,18 +65,19 @@ function formatNumber(num: number): string {
   return Math.round(num).toLocaleString();
 }
 
-// Sort data to always show Mon-Sun order
-function sortByDayOrder(data: DayData[]): DayData[] {
-  const dayMap = new Map(data.map((d) => [d.day, d.traffic]));
-  return DAY_ORDER.map((day) => ({
-    day,
-    traffic: dayMap.get(day) || 0,
-  }));
+// Sort data chronologically by date (oldest to newest)
+function sortByDate(data: DayData[]): DayData[] {
+  return [...data].sort((a, b) => {
+    if (!a.date || !b.date) return 0;
+    return a.date.localeCompare(b.date);
+  });
 }
 
-// Transform daily data for chart
+// Transform daily data for chart - preserves chronological order from backend
 function transformDailyData(data: DayData[]): ChartDataPoint[] {
-  return data.map((d) => ({
+  // Backend already returns chronological order, but ensure it's sorted by date
+  const sorted = sortByDate(data);
+  return sorted.map((d) => ({
     label: d.day,
     traffic: d.traffic,
   }));
@@ -358,13 +359,14 @@ export function WebsiteTrafficChart() {
     (data: any) => {
       // Process daily data
       if (data.data && Array.isArray(data.data)) {
-        const sorted = sortByDayOrder(
-          data.data.map((d: any) => ({
-            day: d.day,
-            traffic: d.traffic || 0,
-          }))
-        );
-        setDailyData(sorted);
+        // Keep chronological order from backend (oldest to newest)
+        // Backend already returns data in chronological order
+        const dailyDataWithDates = data.data.map((d: any) => ({
+          day: d.day,
+          traffic: d.traffic || 0,
+          date: d.date, // Preserve date for chronological sorting
+        }));
+        setDailyData(dailyDataWithDates);
       }
 
       setTotalTraffic(data.total || 0);
