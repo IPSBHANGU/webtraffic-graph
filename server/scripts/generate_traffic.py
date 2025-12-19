@@ -5,7 +5,7 @@ import sys
 import signal
 import argparse
 
-URL = "http://localhost:3001/api/hit"
+URL = "https://webtraffic-graph.onrender.com/api/hit"
 running = True
 
 def stop(sig, frame):

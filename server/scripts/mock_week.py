@@ -5,7 +5,7 @@ import signal
 import argparse
 from datetime import datetime, timedelta
 
-URL = "http://localhost:3001/api/hit"
+URL = "https://webtraffic-graph.onrender.com/api/hit"
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 FULL_NAMES = {"mon": "Monday", "tue": "Tuesday", "wed": "Wednesday", "thu": "Thursday", "fri": "Friday", "sat": "Saturday", "sun": "Sunday"}
 DEFAULT_HITS = {"mon": 2569, "tue": 1232, "wed": 6542, "thu": 2340, "fri": 7984, "sat": 2345, "sun": 1234}

@@ -1,10 +1,19 @@
 import { eq, sql, gte, lte, and } from "drizzle-orm";
-import { db, trafficMinute, trafficHourly, trafficDaily, trafficWeekly, trafficMonthly } from "../db/index.js";
+import {
+  db,
+  trafficEvents,
+  trafficMinute,
+  trafficHourly,
+  trafficDaily,
+  trafficWeekly,
+  trafficMonthly,
+} from "../db/index.js";
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 export class TrafficService {
-  private pendingByDate = new Map<string, number>();
+  
+  private pendingByMinute = new Map<string, number>();
   private savedByDate = new Map<string, number>();
   private flushTimer: NodeJS.Timeout | null = null;
   private cache = {
@@ -29,12 +38,46 @@ export class TrafficService {
   }
 
   recordHits(count: number, targetDate?: Date) {
-    const date = targetDate || new Date();
-    const dateKey = this.formatDate(date);
-    const current = this.pendingByDate.get(dateKey) || 0;
-    this.pendingByDate.set(dateKey, current + count);
+    const baseDate = targetDate || new Date();
+    const now = new Date();
 
-    console.log(`📥 +${count} for ${DAY_NAMES[date.getDay()]} (${dateKey})`);
+    const minuteTimestamp = new Date(
+      baseDate.getFullYear(),
+      baseDate.getMonth(),
+      baseDate.getDate(),
+      now.getHours(),
+      now.getMinutes(),
+      0,
+      0
+    );
+
+    const minuteKey = minuteTimestamp.toISOString();
+    const current = this.pendingByMinute.get(minuteKey) || 0;
+    this.pendingByMinute.set(minuteKey, current + count);
+
+    const dateKey = this.formatDate(baseDate);
+    console.log(
+      `📥 +${count} for ${DAY_NAMES[baseDate.getDay()]} (${dateKey} @ ${now
+        .getHours()
+        .toString()
+        .padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")})`
+    );
+
+    // Store raw event for each request to enable historical reprocessing
+    // Fire-and-forget to keep the hot path fast
+    this.saveRawEvent(minuteTimestamp).catch((err: any) => {
+      console.error("Error saving raw event:", err.message);
+    });
+  }
+
+  private async saveRawEvent(timestamp: Date) {
+    try {
+      await db.insert(trafficEvents).values({
+        timestamp,
+      });
+    } catch (err: any) {
+      console.error("DB error saving raw event:", err.message);
+    }
   }
 
   private formatDate(date: Date): string {
@@ -45,27 +88,21 @@ export class TrafficService {
   }
 
   private async flushToDatabase() {
-    if (this.pendingByDate.size === 0) return;
+    if (this.pendingByMinute.size === 0) return;
 
-    const toFlush = new Map(this.pendingByDate);
-    this.pendingByDate.clear();
+    const toFlush = new Map(this.pendingByMinute);
+    this.pendingByMinute.clear();
 
-    for (const [dateKey, count] of toFlush) {
+    for (const [minuteKey, count] of toFlush) {
       if (count === 0) continue;
 
-      const [year, month, day] = dateKey.split("-").map(Number);
-      const targetDate = new Date(year, month - 1, day, 12, 0, 0);
-      const now = new Date();
+      const timestamp = new Date(minuteKey);
+      if (Number.isNaN(timestamp.getTime())) {
+        continue;
+      }
 
-      const timestamp = new Date(
-        targetDate.getFullYear(),
-        targetDate.getMonth(),
-        targetDate.getDate(),
-        now.getHours(),
-        now.getMinutes(),
-        0,
-        0
-      );
+      const now = new Date();
+      const dateKey = this.formatDate(timestamp);
 
       try {
         await db
@@ -82,17 +119,25 @@ export class TrafficService {
         const saved = this.savedByDate.get(dateKey) || 0;
         this.savedByDate.set(dateKey, saved + count);
         console.log(
-          `💾 Saved ${count} for ${DAY_NAMES[targetDate.getDay()]} (${dateKey})`
+          `💾 Saved ${count} for ${
+            DAY_NAMES[timestamp.getDay()]
+          } (${dateKey} @ ${timestamp
+            .getHours()
+            .toString()
+            .padStart(2, "0")}:${timestamp
+            .getMinutes()
+            .toString()
+            .padStart(2, "0")})`
         );
 
         this.cache.lastUpdate = 0;
-        
+
         // Trigger hour aggregation check after saving minute data
         this.checkAndAggregateToHour(timestamp);
       } catch (err: any) {
         console.error(`DB error for ${dateKey}:`, err.message);
-        const current = this.pendingByDate.get(dateKey) || 0;
-        this.pendingByDate.set(dateKey, current + count);
+        const current = this.pendingByMinute.get(minuteKey) || 0;
+        this.pendingByMinute.set(minuteKey, current + count);
       }
     }
   }
@@ -345,7 +390,15 @@ export class TrafficService {
   }
 
   private getPendingForDate(dateKey: string): number {
-    return this.pendingByDate.get(dateKey) || 0;
+    // Sum all pending minute windows that fall on this date
+    let total = 0;
+    for (const [minuteKey, count] of this.pendingByMinute.entries()) {
+      const ts = new Date(minuteKey);
+      if (!Number.isNaN(ts.getTime()) && this.formatDate(ts) === dateKey) {
+        total += count;
+      }
+    }
+    return total;
   }
 
   async getTrafficForDate(date: Date): Promise<number> {
@@ -528,7 +581,7 @@ export class TrafficService {
 
   getPendingCount() {
     let total = 0;
-    for (const count of this.pendingByDate.values()) {
+    for (const count of this.pendingByMinute.values()) {
       total += count;
     }
     return total;
