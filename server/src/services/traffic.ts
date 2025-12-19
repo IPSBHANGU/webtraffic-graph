@@ -63,11 +63,13 @@ export class TrafficService {
         .padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")})`
     );
 
-    // Store raw event for each request to enable historical reprocessing
-    // Fire-and-forget to keep the hot path fast
-    this.saveRawEvent(minuteTimestamp).catch((err: any) => {
-      console.error("Error saving raw event:", err.message);
-    });
+    
+    const storeRawEvents = process.env.STORE_RAW_EVENTS === "true";
+    if (storeRawEvents) {
+      this.saveRawEvent(minuteTimestamp).catch((err: any) => {
+        console.error("Error saving raw event:", err.message);
+      });
+    }
   }
 
   private async saveRawEvent(timestamp: Date) {
