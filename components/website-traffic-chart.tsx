@@ -27,7 +27,7 @@ import type { DateRange } from "react-day-picker";
 // CONFIGURATION
 // ===========================================
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://webtraffic-graph.onrender.com";
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://webtraffic-graph.onrender.com";
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "wss://webtraffic-graph.onrender.com";
 
 // Days in correct order: Monday to Sunday
 const DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
