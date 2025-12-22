@@ -10,7 +10,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { parseDate } from "chrono-node";
-import { CalendarIcon, X } from "lucide-react";
+import { CalendarIcon, X, Download, FileText } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -26,8 +26,8 @@ import type { DateRange } from "react-day-picker";
 // ===========================================
 // CONFIGURATION
 // ===========================================
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://webtraffic-graph.onrender.com";
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "wss://webtraffic-graph.onrender.com";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:3001";
 
 // Days in correct order: Monday to Sunday
 const DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -551,6 +551,77 @@ export function WebsiteTrafficChart() {
     }
   }, [timePeriod, totalTraffic, customTotal]);
 
+  // ---- EXPORT HANDLERS ----
+  const handleExportCSV = React.useCallback(async () => {
+    try {
+      let url = `${API_URL}/api/export/csv`;
+      const params = new URLSearchParams();
+      
+      if (timePeriod === "custom" && dateRange?.from && dateRange?.to) {
+        params.append("start", formatDateAPI(dateRange.from));
+        params.append("end", formatDateAPI(dateRange.to));
+        url += `?${params.toString()}`;
+      } else if (timePeriod === "custom" && dateRange?.from) {
+        params.append("start", formatDateAPI(dateRange.from));
+        params.append("end", formatDateAPI(dateRange.from));
+        url += `?${params.toString()}`;
+      }
+
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error("Failed to export CSV");
+      }
+
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = `traffic-events-${new Date().toISOString().split("T")[0]}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(downloadUrl);
+    } catch (error) {
+      console.error("Error exporting CSV:", error);
+      alert("Failed to export CSV. Please try again.");
+    }
+  }, [timePeriod, dateRange]);
+
+  const handleExportPDF = React.useCallback(async () => {
+    try {
+      let url = `${API_URL}/api/export/pdf`;
+      const params = new URLSearchParams();
+      
+      if (timePeriod === "custom" && dateRange?.from && dateRange?.to) {
+        params.append("start", formatDateAPI(dateRange.from));
+        params.append("end", formatDateAPI(dateRange.to));
+        url += `?${params.toString()}`;
+      } else if (timePeriod === "custom" && dateRange?.from) {
+        params.append("start", formatDateAPI(dateRange.from));
+        params.append("end", formatDateAPI(dateRange.from));
+        url += `?${params.toString()}`;
+      }
+
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error("Failed to export PDF");
+      }
+
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = `traffic-events-${new Date().toISOString().split("T")[0]}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(downloadUrl);
+    } catch (error) {
+      console.error("Error exporting PDF:", error);
+      alert("Failed to export PDF. Please try again.");
+    }
+  }, [timePeriod, dateRange]);
+
   // ===========================================
   // RENDER
   // ===========================================
@@ -849,6 +920,26 @@ export function WebsiteTrafficChart() {
             </div>
           </div>
         )}
+
+        {/* Export Buttons */}
+        <div className="w-full flex items-center justify-center gap-3 mt-4 pt-4 border-t border-white/5">
+          <Button
+            onClick={handleExportCSV}
+            variant="outline"
+            className="bg-white/5 border-white/10 text-white hover:bg-white/10"
+          >
+            <Download className="h-4 w-4 mr-2" />
+            Export CSV
+          </Button>
+          <Button
+            onClick={handleExportPDF}
+            variant="outline"
+            className="bg-white/5 border-white/10 text-white hover:bg-white/10"
+          >
+            <FileText className="h-4 w-4 mr-2" />
+            Export PDF
+          </Button>
+        </div>
       </CardContent>
     </Card>
   );

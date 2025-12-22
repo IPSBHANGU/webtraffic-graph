@@ -18,6 +18,8 @@ export const trafficEvents = pgTable(
       .notNull(),
     source: varchar("source", { length: 255 }),
     metadata: varchar("metadata", { length: 1000 }),
+    ipAddress: varchar("ip_address", { length: 45 }), // IPv6 max length
+    userAgent: varchar("user_agent", { length: 500 }),
   },
   (table) => ({
     timestampIdx: index("traffic_events_timestamp_idx").on(table.timestamp),

@@ -15,6 +15,13 @@
       "when": 1766079475608,
       "tag": "0001_bouncy_jane_foster",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1766437286532,
+      "tag": "0002_strong_paper_doll",
+      "breakpoints": true
     }
   ]
 }

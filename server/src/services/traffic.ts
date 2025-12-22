@@ -64,11 +64,11 @@ export class TrafficService {
     }
   }
 
-  recordHit(targetDate?: Date) {
-    this.recordHits(1, targetDate);
+  recordHit(targetDate?: Date, ipAddress?: string, userAgent?: string) {
+    this.recordHits(1, targetDate, ipAddress, userAgent);
   }
 
-  recordHits(count: number, targetDate?: Date) {
+  recordHits(count: number, targetDate?: Date, ipAddress?: string, userAgent?: string) {
     const baseDate = targetDate || new Date();
     const now = new Date();
 
@@ -101,16 +101,21 @@ export class TrafficService {
     
     const storeRawEvents = process.env.STORE_RAW_EVENTS === "true";
     if (storeRawEvents) {
-      this.saveRawEvent(minuteTimestamp).catch((err: any) => {
-        console.error("Error saving raw event:", err.message);
-      });
+      // Save each hit as a separate event with IP and user agent
+      for (let i = 0; i < count; i++) {
+        this.saveRawEvent(minuteTimestamp, ipAddress, userAgent).catch((err: any) => {
+          console.error("Error saving raw event:", err.message);
+        });
+      }
     }
   }
 
-  private async saveRawEvent(timestamp: Date) {
+  private async saveRawEvent(timestamp: Date, ipAddress?: string, userAgent?: string) {
     try {
       await db.insert(trafficEvents).values({
         timestamp,
+        ipAddress,
+        userAgent,
       });
     } catch (err: any) {
       console.error("DB error saving raw event:", err.message);
@@ -710,6 +715,56 @@ export class TrafficService {
     result.sort((a, b) => a.date.localeCompare(b.date));
     
     return result;
+  }
+
+  async *getAllEventsStream(startDate?: Date, endDate?: Date) {
+    try {
+      const conditions = [];
+      if (startDate) {
+        conditions.push(gte(trafficEvents.timestamp, startDate));
+      }
+      if (endDate) {
+        conditions.push(lte(trafficEvents.timestamp, endDate));
+      }
+      
+      let query = db.select().from(trafficEvents);
+      
+      if (conditions.length > 0) {
+        query = query.where(and(...conditions)) as any;
+      }
+      
+      const events = await query.orderBy(trafficEvents.timestamp);
+      
+      for (const event of events) {
+        yield event;
+      }
+    } catch (err: any) {
+      console.error("Error streaming events:", err.message);
+      throw err;
+    }
+  }
+
+  async getAllEvents(startDate?: Date, endDate?: Date) {
+    try {
+      const conditions = [];
+      if (startDate) {
+        conditions.push(gte(trafficEvents.timestamp, startDate));
+      }
+      if (endDate) {
+        conditions.push(lte(trafficEvents.timestamp, endDate));
+      }
+      
+      let query = db.select().from(trafficEvents);
+      
+      if (conditions.length > 0) {
+        query = query.where(and(...conditions)) as any;
+      }
+      
+      return await query.orderBy(trafficEvents.timestamp);
+    } catch (err: any) {
+      console.error("Error fetching events:", err.message);
+      throw err;
+    }
   }
 
   async shutdown() {
