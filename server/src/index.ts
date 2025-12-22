@@ -52,6 +52,33 @@ async function main() {
     });
   });
 
+  app.post("/notify", async (req, res) => {
+    const { message } = req.body;
+  
+    if (!message) {
+      return res.status(400).json({ error: "message required" });
+    }
+  
+    try {
+      const response = await fetch(`https://ntfy.sh/realtime_web_traffic`, {
+        method: "POST",
+        headers: {
+          "Title": "Real-time Web Traffic Notification",
+          "Priority": "4"
+        },
+        body: message
+      });
+  
+      if (!response.ok) {
+        throw new Error("Failed to send ntfy notification");
+      }
+  
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   const shutdown = async () => {
     console.log("\n👋 Shutting down...");
     await wsManager.shutdown();
