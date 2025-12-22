@@ -20,6 +20,9 @@ export class TrafficService {
     lastUpdate: 0,
     last7Days: [] as Array<{ day: string; traffic: number; date: string }>,
   };
+  private totalHits = 0;
+  private lastNotifiedThreshold = 0;
+  private readonly THRESHOLD_INTERVAL = 10000; 
 
   constructor() {
     this.flushTimer = setInterval(() => this.flushToDatabase(), 4000);
@@ -30,14 +33,42 @@ export class TrafficService {
     // Run aggregations every day at midnight
     setInterval(() => this.aggregateToWeek(), 86400000);
     setInterval(() => this.aggregateToMonth(), 86400000);
+    // Initialize total hits from database
+    this.initializeTotalHits();
     console.log("📊 Traffic service started with real-time aggregation");
   }
 
-  recordHit(targetDate?: Date) {
-    this.recordHits(1, targetDate);
+  private async initializeTotalHits() {
+    try {
+      // Get total from daily aggregation (most efficient)
+      const totalResult = await db
+        .select({ total: sql<number>`COALESCE(SUM(${trafficDaily.count}), 0)` })
+        .from(trafficDaily);
+      
+      const dbTotal = Number(totalResult[0]?.total) || 0;
+      
+      // Also add pending hits
+      const pendingTotal = this.getPendingCount();
+      
+      this.totalHits = dbTotal + pendingTotal;
+      
+      // Set last notified threshold to the highest completed threshold
+      this.lastNotifiedThreshold = Math.floor(this.totalHits / this.THRESHOLD_INTERVAL) * this.THRESHOLD_INTERVAL;
+      
+      console.log(`📊 Initialized total hits: ${this.totalHits.toLocaleString()} (last threshold: ${this.lastNotifiedThreshold.toLocaleString()})`);
+    } catch (err: any) {
+      console.error("Error initializing total hits:", err.message);
+      // Continue with 0 if initialization fails
+      this.totalHits = 0;
+      this.lastNotifiedThreshold = 0;
+    }
   }
 
-  recordHits(count: number, targetDate?: Date) {
+  recordHit(targetDate?: Date, ipAddress?: string, userAgent?: string) {
+    this.recordHits(1, targetDate, ipAddress, userAgent);
+  }
+
+  recordHits(count: number, targetDate?: Date, ipAddress?: string, userAgent?: string) {
     const baseDate = targetDate || new Date();
     const now = new Date();
 
@@ -55,6 +86,10 @@ export class TrafficService {
     const current = this.pendingByMinute.get(minuteKey) || 0;
     this.pendingByMinute.set(minuteKey, current + count);
 
+    // Update total hits and check for threshold
+    this.totalHits += count;
+    this.checkAndNotifyThreshold();
+
     const dateKey = this.formatDate(baseDate);
     console.log(
       `📥 +${count} for ${DAY_NAMES[baseDate.getDay()]} (${dateKey} @ ${now
@@ -66,19 +101,60 @@ export class TrafficService {
     
     const storeRawEvents = process.env.STORE_RAW_EVENTS === "true";
     if (storeRawEvents) {
-      this.saveRawEvent(minuteTimestamp).catch((err: any) => {
-        console.error("Error saving raw event:", err.message);
+      // Save each hit as a separate event with IP and user agent
+      for (let i = 0; i < count; i++) {
+        this.saveRawEvent(minuteTimestamp, ipAddress, userAgent).catch((err: any) => {
+          console.error("Error saving raw event:", err.message);
+        });
+      }
+    }
+  }
+
+  private async saveRawEvent(timestamp: Date, ipAddress?: string, userAgent?: string) {
+    try {
+      await db.insert(trafficEvents).values({
+        timestamp,
+        ipAddress,
+        userAgent,
+      });
+    } catch (err: any) {
+      console.error("DB error saving raw event:", err.message);
+    }
+  }
+
+  private checkAndNotifyThreshold() {
+    const currentThreshold = Math.floor(this.totalHits / this.THRESHOLD_INTERVAL) * this.THRESHOLD_INTERVAL;
+    
+    // Only notify if we've crossed a new threshold
+    if (currentThreshold > this.lastNotifiedThreshold && currentThreshold > 0) {
+      this.lastNotifiedThreshold = currentThreshold;
+      this.sendThresholdNotification(currentThreshold).catch((err: any) => {
+        console.error("Error sending threshold notification:", err.message);
       });
     }
   }
 
-  private async saveRawEvent(timestamp: Date) {
+  private async sendThresholdNotification(threshold: number) {
     try {
-      await db.insert(trafficEvents).values({
-        timestamp,
+      const message = `Traffic Alert: ${threshold.toLocaleString()} requests reached!\n\nTotal traffic: ${this.totalHits.toLocaleString()} requests`;
+      
+      const response = await fetch(`https://ntfy.sh/realtime_web_traffic`, {
+        method: "POST",
+        headers: {
+          "Title": `Traffic Milestone: ${threshold.toLocaleString()} Requests`,
+          "Priority": "4", // High priority
+          "Tags": "warning,traffic"
+        },
+        body: message
       });
+
+      if (!response.ok) {
+        throw new Error(`Failed to send ntfy notification: ${response.statusText}`);
+      }
+
+      console.log(`🔔 Sent threshold notification for ${threshold.toLocaleString()} requests`);
     } catch (err: any) {
-      console.error("DB error saving raw event:", err.message);
+      console.error("Error sending threshold notification:", err.message);
     }
   }
 
@@ -639,6 +715,56 @@ export class TrafficService {
     result.sort((a, b) => a.date.localeCompare(b.date));
     
     return result;
+  }
+
+  async *getAllEventsStream(startDate?: Date, endDate?: Date) {
+    try {
+      const conditions = [];
+      if (startDate) {
+        conditions.push(gte(trafficEvents.timestamp, startDate));
+      }
+      if (endDate) {
+        conditions.push(lte(trafficEvents.timestamp, endDate));
+      }
+      
+      let query = db.select().from(trafficEvents);
+      
+      if (conditions.length > 0) {
+        query = query.where(and(...conditions)) as any;
+      }
+      
+      const events = await query.orderBy(trafficEvents.timestamp);
+      
+      for (const event of events) {
+        yield event;
+      }
+    } catch (err: any) {
+      console.error("Error streaming events:", err.message);
+      throw err;
+    }
+  }
+
+  async getAllEvents(startDate?: Date, endDate?: Date) {
+    try {
+      const conditions = [];
+      if (startDate) {
+        conditions.push(gte(trafficEvents.timestamp, startDate));
+      }
+      if (endDate) {
+        conditions.push(lte(trafficEvents.timestamp, endDate));
+      }
+      
+      let query = db.select().from(trafficEvents);
+      
+      if (conditions.length > 0) {
+        query = query.where(and(...conditions)) as any;
+      }
+      
+      return await query.orderBy(trafficEvents.timestamp);
+    } catch (err: any) {
+      console.error("Error fetching events:", err.message);
+      throw err;
+    }
   }
 
   async shutdown() {
