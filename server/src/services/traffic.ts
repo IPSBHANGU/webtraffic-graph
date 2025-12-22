@@ -719,7 +719,7 @@ export class TrafficService {
 
   async *getAllEventsStream(startDate?: Date, endDate?: Date) {
     try {
-      const conditions = [];
+      const conditions: any[] = [];
       if (startDate) {
         conditions.push(gte(trafficEvents.timestamp, startDate));
       }
@@ -746,7 +746,7 @@ export class TrafficService {
 
   async getAllEvents(startDate?: Date, endDate?: Date) {
     try {
-      const conditions = [];
+      const conditions: any[] = [];
       if (startDate) {
         conditions.push(gte(trafficEvents.timestamp, startDate));
       }
