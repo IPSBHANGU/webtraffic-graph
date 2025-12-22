@@ -14,6 +14,21 @@ async function main() {
   const app = express();
   app.use(cors({ origin: true, credentials: true }));
   app.use(express.json());
+  app.set("trust proxy", true);
+
+  app.use((req, res, next) => {
+    const xff = req.headers["x-forwarded-for"];
+    const realIp = Array.isArray(xff) ? xff[0] : xff?.split(",")[0];
+
+    req.clientIp = realIp || req.socket.remoteAddress || req.ip;
+
+    // normalize IPv6-mapped IPv4
+    if (req.clientIp?.startsWith("::ffff:")) {
+      req.clientIp = req.clientIp.replace("::ffff:", "");
+    }
+
+    next();
+  });
 
   app.use((req, res, next) => {
     const start = Date.now();
@@ -54,25 +69,25 @@ async function main() {
 
   app.post("/notify", async (req, res) => {
     const { message } = req.body;
-  
+
     if (!message) {
       return res.status(400).json({ error: "message required" });
     }
-  
+
     try {
       const response = await fetch(`https://ntfy.sh/realtime_web_traffic`, {
         method: "POST",
         headers: {
-          "Title": "Real-time Web Traffic Notification",
-          "Priority": "4"
+          Title: "Real-time Web Traffic Notification",
+          Priority: "4",
         },
-        body: message
+        body: message,
       });
-  
+
       if (!response.ok) {
         throw new Error("Failed to send ntfy notification");
       }
-  
+
       res.json({ success: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
