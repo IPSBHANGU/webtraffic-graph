@@ -45,8 +45,8 @@ export async function updateSession(request: NextRequest) {
   const { data } = await supabase.auth.getUser();
   const user = data?.user;
 
-  // Protect dashboard routes - require authentication
-  if (!user && pathname.startsWith("/dashboard")) {
+  // Protect root and dashboard routes - require authentication
+  if (!user && (pathname === "/" || pathname.startsWith("/dashboard"))) {
     const url = request.nextUrl.clone();
     url.pathname = "/auth/login";
     return NextResponse.redirect(url);
