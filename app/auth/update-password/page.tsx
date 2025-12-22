@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, Suspense } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
 import { toast } from "sonner"
@@ -15,7 +15,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 
-export default function UpdatePasswordPage() {
+function UpdatePasswordForm() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -132,6 +132,25 @@ export default function UpdatePasswordPage() {
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+export default function UpdatePasswordPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex min-h-screen items-center justify-center bg-[#0a0f1c] p-6">
+        <Card className="w-full max-w-md border-white/10 bg-white/5 backdrop-blur-sm">
+          <CardHeader>
+            <CardTitle className="text-2xl text-white">Update Password</CardTitle>
+            <CardDescription className="text-white/60">
+              Loading...
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      </div>
+    }>
+      <UpdatePasswordForm />
+    </Suspense>
   )
 }
 
