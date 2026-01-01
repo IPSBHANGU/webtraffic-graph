@@ -7,15 +7,15 @@ import {
   trafficDaily,
   trafficWeekly,
   trafficMonthly,
-} from "../db";
+} from "../db/index.js";
 import {
   queueTrafficEvent,
   queueTrafficEvents,
   getBufferSize,
   forceFlush,
   syncPendingMinutes,
-} from "../queues/event.queue";
-import { redisCounter } from "../redis";
+} from "../queues/event.queue.js";
+import { redisCounter } from "../redis/index.js";
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 

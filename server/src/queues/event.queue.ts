@@ -7,8 +7,8 @@ import {
   REALTIME_CHANNEL,
   redisCounter,
   publishTrafficUpdate,
-} from "../redis";
-import { db, trafficEvents, trafficMinute } from "../db";
+} from "../redis/index.js";
+import { db, trafficEvents, trafficMinute } from "../db/index.js";
 import { sql } from "drizzle-orm";
 
 const BATCH_SIZE = 100;  // Flush when batch size reached

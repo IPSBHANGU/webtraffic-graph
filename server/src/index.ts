@@ -1,16 +1,16 @@
-import "./env";
+import "./env.js";
 import express from "express";
 import cors from "cors";
 import { createServer } from "http";
 import { and, gte, lte, sql } from "drizzle-orm";
 
 async function main() {
-  const { config } = await import("./config");
-  const { TrafficService } = await import("./services/traffic");
-  const { WebSocketManager } = await import("./websocket");
-  const { createTrafficRouter } = await import("./routes/traffic");
-  const { shutdownQueues } = await import("./queues/event.queue");
-  const { shutdownRedis, counterClient } = await import("./redis");
+  const { config } = await import("./config/index.js");
+  const { TrafficService } = await import("./services/traffic.js");
+  const { WebSocketManager } = await import("./websocket/index.js");
+  const { createTrafficRouter } = await import("./routes/traffic.js");
+  const { shutdownQueues } = await import("./queues/event.queue.js");
+  const { shutdownRedis, counterClient } = await import("./redis/index.js");
   const {
     db,
     trafficDaily,
@@ -19,7 +19,7 @@ async function main() {
     trafficMinute,
     trafficWeekly,
     trafficMonthly,
-  } = await import("./db");
+  } = await import("./db/index.js");
 
   console.log("🚀 Starting server...");
 

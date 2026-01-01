@@ -1,7 +1,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { Server } from "http";
-import { TrafficService } from "../services/traffic";
-import { subClient, REALTIME_CHANNEL } from "../redis";
+import { TrafficService } from "../services/traffic.js";
+import { subClient, REALTIME_CHANNEL } from "../redis/index.js";
 
 interface Client extends WebSocket {
   isAlive: boolean;
