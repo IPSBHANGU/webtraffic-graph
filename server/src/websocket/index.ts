@@ -1,35 +1,176 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { Server } from "http";
-import { TrafficService } from "../services/traffic.js";
+import { TrafficService } from "../services/traffic";
+import { subClient, REALTIME_CHANNEL } from "../redis";
 
 interface Client extends WebSocket {
   isAlive: boolean;
+  lastDataSent?: string;
+}
+
+interface RealtimeMessage {
+  type: string;
+  count: number;
+  date: string;
+  todayTotal: number;
+  weekTotal: number;
 }
 
 export class WebSocketManager {
   private wss: WebSocketServer;
   private clients = new Set<Client>();
   private trafficService: TrafficService;
-  private broadcastTimer: NodeJS.Timeout | null = null;
   private pingTimer: NodeJS.Timeout | null = null;
+  private subscriptionReady = false;
+  private messageQueue: RealtimeMessage[] = [];
+  private broadcastThrottleTimer: NodeJS.Timeout | null = null;
+  private lastBroadcastTime = 0;
+  private minBroadcastInterval = 50; // Min 50ms between broadcasts
+  private fallbackPollingTimer: NodeJS.Timeout | null = null;
 
   constructor(server: Server, trafficService: TrafficService) {
     this.trafficService = trafficService;
     this.wss = new WebSocketServer({ server, path: "/" });
 
     this.setupServer();
-    this.startBroadcasting();
+    this.setupRealtimeSubscription();
     this.startPingPong();
+    this.startFallbackPolling();
+  }
+
+  private async setupRealtimeSubscription() {
+    try {
+      // Check if subClient is already subscribed
+      if (this.subscriptionReady) return;
+
+      // Subscribe to real-time traffic updates from Redis pub/sub
+      await subClient.subscribe(REALTIME_CHANNEL);
+      this.subscriptionReady = true;
+      console.log(`📡 WebSocket subscribed to ${REALTIME_CHANNEL}`);
+
+      // Handle incoming messages
+      subClient.on("message", (channel: string, message: string) => {
+        if (channel !== REALTIME_CHANNEL) return;
+
+        try {
+          const data = JSON.parse(message) as RealtimeMessage;
+          this.handleRealtimeMessage(data);
+        } catch (err: any) {
+          console.error("Error parsing realtime message:", err.message);
+        }
+      });
+
+      // Handle subscription errors
+      subClient.on("error", (err) => {
+        console.error("Redis subscription error:", err.message);
+        this.subscriptionReady = false;
+      });
+    } catch (err: any) {
+      console.error("Failed to subscribe to realtime channel:", err.message);
+      this.subscriptionReady = false;
+    }
+  }
+
+  private handleRealtimeMessage(data: RealtimeMessage) {
+    // Queue the message
+    this.messageQueue.push(data);
+
+    // Throttle broadcasts to avoid overwhelming clients
+    const now = Date.now();
+    const timeSinceLastBroadcast = now - this.lastBroadcastTime;
+
+    if (timeSinceLastBroadcast >= this.minBroadcastInterval) {
+      // Broadcast immediately
+      this.processBroadcastQueue();
+    } else if (!this.broadcastThrottleTimer) {
+      // Schedule broadcast
+      const delay = this.minBroadcastInterval - timeSinceLastBroadcast;
+      this.broadcastThrottleTimer = setTimeout(() => {
+        this.broadcastThrottleTimer = null;
+        this.processBroadcastQueue();
+      }, delay);
+    }
+  }
+
+  private async processBroadcastQueue() {
+    if (this.messageQueue.length === 0) return;
+
+    // Get latest message (most recent counts)
+    const latestMessage = this.messageQueue[this.messageQueue.length - 1];
+    this.messageQueue = [];
+    this.lastBroadcastTime = Date.now();
+
+    // Broadcast with full data
+    await this.broadcastWithLiveData(latestMessage);
+  }
+
+  private async broadcastWithLiveData(realtimeData?: RealtimeMessage) {
+    if (this.clients.size === 0) return;
+
+    try {
+      // Get fresh data from traffic service
+      const [data, hourlyData, percentageChange] = await Promise.all([
+        this.trafficService.getLast7Days(),
+        this.trafficService.getHourlyData(),
+        this.trafficService.getPercentageChange(),
+      ]);
+
+      // Use Redis counts from the realtime message if available
+      // Otherwise get from traffic service
+      let total: number;
+      let currentDay: number;
+
+      if (realtimeData) {
+        total = realtimeData.weekTotal;
+        currentDay = realtimeData.todayTotal;
+      } else {
+        [total, currentDay] = await Promise.all([
+          this.trafficService.getTotalTraffic(),
+          this.trafficService.getTodayTraffic(),
+        ]);
+      }
+
+      const message = JSON.stringify({
+        type: "traffic",
+        data,
+        hourlyData,
+        total,
+        currentDay,
+        percentageChange,
+        timestamp: Date.now(),
+        source: realtimeData ? "realtime" : "poll",
+      });
+
+      let sentCount = 0;
+      for (const client of this.clients) {
+        if (client.readyState === WebSocket.OPEN) {
+          // Only send if data changed to reduce bandwidth
+          if (client.lastDataSent !== message) {
+            client.send(message);
+            client.lastDataSent = message;
+            sentCount++;
+          }
+        }
+      }
+
+      if (sentCount > 0 && realtimeData) {
+        console.log(
+          `📤 Broadcast to ${sentCount} clients: today=${currentDay}, week=${total}`
+        );
+      }
+    } catch (err: any) {
+      console.error("Broadcast error:", err.message);
+    }
   }
 
   private setupServer() {
-    this.wss.on("connection", (ws: WebSocket) => {
+    this.wss.on("connection", async (ws: WebSocket) => {
       const client = ws as Client;
       client.isAlive = true;
       this.clients.add(client);
 
       console.log(`📱 Client connected (${this.clients.size} total)`);
-      this.sendToClient(client);
+      await this.sendToClient(client);
 
       client.on("pong", () => {
         client.isAlive = true;
@@ -68,35 +209,6 @@ export class WebSocketManager {
           this.trafficService.getPercentageChange(),
         ]);
 
-      client.send(
-        JSON.stringify({
-          type: "traffic",
-          data,
-          hourlyData,
-          total,
-          currentDay,
-          percentageChange,
-          timestamp: Date.now(),
-        })
-      );
-    } catch (err) {
-      console.error("Error sending to client:", err);
-    }
-  }
-
-  private async broadcast() {
-    if (this.clients.size === 0) return;
-
-    try {
-      const [data, hourlyData, total, currentDay, percentageChange] =
-        await Promise.all([
-          this.trafficService.getLast7Days(),
-          this.trafficService.getHourlyData(),
-          this.trafficService.getTotalTraffic(),
-          this.trafficService.getTodayTraffic(),
-          this.trafficService.getPercentageChange(),
-        ]);
-
       const message = JSON.stringify({
         type: "traffic",
         data,
@@ -105,20 +217,25 @@ export class WebSocketManager {
         currentDay,
         percentageChange,
         timestamp: Date.now(),
+        source: "initial",
       });
 
-      for (const client of this.clients) {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(message);
-        }
-      }
-    } catch (err) {
-      console.error("Broadcast error:", err);
+      client.send(message);
+      client.lastDataSent = message;
+    } catch (err: any) {
+      console.error("Error sending to client:", err.message);
     }
   }
 
-  private startBroadcasting() {
-    this.broadcastTimer = setInterval(() => this.broadcast(), 500);
+  // Fallback polling in case Redis pub/sub fails
+  private startFallbackPolling() {
+    this.fallbackPollingTimer = setInterval(async () => {
+      // Only poll if we have clients and subscription isn't working
+      if (this.clients.size > 0 && !this.subscriptionReady) {
+        console.log("⚠️ Using fallback polling (Redis subscription not ready)");
+        await this.broadcastWithLiveData();
+      }
+    }, 1000);
   }
 
   private startPingPong() {
@@ -139,9 +256,23 @@ export class WebSocketManager {
     return this.clients.size;
   }
 
+  isSubscriptionActive() {
+    return this.subscriptionReady;
+  }
+
   async shutdown() {
-    if (this.broadcastTimer) clearInterval(this.broadcastTimer);
     if (this.pingTimer) clearInterval(this.pingTimer);
+    if (this.broadcastThrottleTimer) clearTimeout(this.broadcastThrottleTimer);
+    if (this.fallbackPollingTimer) clearInterval(this.fallbackPollingTimer);
+
+    // Unsubscribe from Redis
+    if (this.subscriptionReady) {
+      try {
+        await subClient.unsubscribe(REALTIME_CHANNEL);
+      } catch (err: any) {
+        console.error("Error unsubscribing:", err.message);
+      }
+    }
 
     for (const client of this.clients) {
       client.close();

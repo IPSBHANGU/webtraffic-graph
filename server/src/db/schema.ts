@@ -131,24 +131,7 @@ export const trafficMonthly = pgTable(
   })
 );
 
-export const trafficRealtime = pgTable(
-  "traffic_realtime",
-  {
-    id: serial("id").primaryKey(),
-    currentMinute: timestamp("current_minute", { withTimezone: true })
-      .notNull()
-      .unique(),
-    count: bigint("count", { mode: "number" }).default(0).notNull(),
-    lastUpdated: timestamp("last_updated", { withTimezone: true })
-      .defaultNow()
-      .notNull(),
-  },
-  (table) => ({
-    currentMinuteIdx: index("traffic_realtime_current_minute_idx").on(
-      table.currentMinute
-    ),
-  })
-);
+
 
 export type TrafficEvent = typeof trafficEvents.$inferSelect;
 export type NewTrafficEvent = typeof trafficEvents.$inferInsert;
@@ -162,5 +145,4 @@ export type TrafficWeekly = typeof trafficWeekly.$inferSelect;
 export type NewTrafficWeekly = typeof trafficWeekly.$inferInsert;
 export type TrafficMonthly = typeof trafficMonthly.$inferSelect;
 export type NewTrafficMonthly = typeof trafficMonthly.$inferInsert;
-export type TrafficRealtime = typeof trafficRealtime.$inferSelect;
-export type NewTrafficRealtime = typeof trafficRealtime.$inferInsert;
+

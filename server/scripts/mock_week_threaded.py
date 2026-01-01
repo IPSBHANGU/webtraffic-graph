@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from queue import Queue
 from collections import deque
 
-URL = "https://webtraffic-graph.onrender.com/api/hit"
+URL = "http://localhost:3001/api/hit"
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 FULL_NAMES = {"mon": "Monday", "tue": "Tuesday", "wed": "Wednesday", "thu": "Thursday", "fri": "Friday", "sat": "Saturday", "sun": "Sunday"}
 DEFAULT_HITS = {"mon": 1569, "tue": 1232, "wed": 2542, "thu": 540, "fri": 7984, "sat": 2345, "sun": 1234}
