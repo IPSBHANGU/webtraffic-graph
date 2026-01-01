@@ -43,6 +43,32 @@ export class WebSocketManager {
       // Check if subClient is already subscribed
       if (this.subscriptionReady) return;
 
+      // Wait for Redis client to be ready
+      if (subClient.status !== "ready") {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            subClient.removeListener("ready", onReady);
+            subClient.removeListener("error", onError);
+            reject(new Error("Redis client ready timeout"));
+          }, 10000); // 10 second timeout
+
+          const onReady = () => {
+            clearTimeout(timeout);
+            subClient.removeListener("error", onError);
+            resolve();
+          };
+
+          const onError = (err: Error) => {
+            clearTimeout(timeout);
+            subClient.removeListener("ready", onReady);
+            reject(err);
+          };
+
+          subClient.once("ready", onReady);
+          subClient.once("error", onError);
+        });
+      }
+
       // Subscribe to real-time traffic updates from Redis pub/sub
       await subClient.subscribe(REALTIME_CHANNEL);
       this.subscriptionReady = true;
