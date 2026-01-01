@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
-import { TrafficService } from "../services/traffic";
-import { db, trafficEvents } from "../db";
+import { TrafficService } from "../services/traffic.js";
+import { db, trafficEvents } from "../db/index.js";
 import { gte, lte, and, sql } from "drizzle-orm";
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];

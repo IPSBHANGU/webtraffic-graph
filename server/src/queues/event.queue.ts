@@ -3,8 +3,9 @@ import {
   bullMQRedis,
   redisCounter,
   publishTrafficUpdate,
-} from "../redis";
-import { db, trafficMinute } from "../db";
+} from "../redis/index.js";
+import { db, trafficEvents, trafficMinute } from "../db/index.js";
+import { sql } from "drizzle-orm";
 
 const BATCH_SIZE = 30;  // Flush when batch size reached
 const FLUSH_INTERVAL_MS = 200;  // Flush every 300ms for near-instant persistence
