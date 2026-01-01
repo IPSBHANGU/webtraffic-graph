@@ -26,8 +26,10 @@ import type { DateRange } from "react-day-picker";
 // ===========================================
 // CONFIGURATION
 // ===========================================
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://webtraffic-graph.onrender.com";
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "wss://webtraffic-graph.onrender.com";
+const API_URL =
+  process.env.NEXT_PUBLIC_API_URL || "http://webtraffic-graph.onrender.com";
+const WS_URL =
+  process.env.NEXT_PUBLIC_WS_URL || "wss://webtraffic-graph.onrender.com";
 
 // Days in correct order: Monday to Sunday
 const DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -75,7 +77,6 @@ function sortByDate(data: DayData[]): DayData[] {
 
 // Transform daily data for chart - preserves chronological order from backend
 function transformDailyData(data: DayData[]): ChartDataPoint[] {
-  // Backend already returns chronological order, but ensure it's sorted by date
   const sorted = sortByDate(data);
   return sorted.map((d) => ({
     label: d.day,
@@ -86,7 +87,6 @@ function transformDailyData(data: DayData[]): ChartDataPoint[] {
 // Transform custom date data for chart
 function transformCustomDateData(data: CustomDateData[]): ChartDataPoint[] {
   return data.map((d) => {
-    // Format date as "Dec 19" style
     const date = new Date(d.date);
     const month = date.toLocaleDateString("en-US", { month: "short" });
     const day = date.getDate();
@@ -116,7 +116,69 @@ function formatDateAPI(date: Date): string {
 }
 
 // ===========================================
-// SMOOTH COUNTER COMPONENT (no jerk)
+// MONOTONIC COUNTER - Ensures count never decreases
+// ===========================================
+function useMonotonicCounter(externalValue: number) {
+  const [displayValue, setDisplayValue] = React.useState(externalValue);
+  const maxValueRef = React.useRef(externalValue);
+  const animationRef = React.useRef<number>();
+  const lastUpdateTimeRef = React.useRef(Date.now());
+
+  React.useEffect(() => {
+    // Only update if new value is higher (monotonic increase)
+    if (externalValue > maxValueRef.current) {
+      const startValue = maxValueRef.current;
+      const endValue = externalValue;
+      const diff = endValue - startValue;
+
+      maxValueRef.current = endValue;
+      lastUpdateTimeRef.current = Date.now();
+
+      // Cancel any existing animation
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
+
+      // Smooth animation
+      const duration = 200;
+      const startTime = performance.now();
+
+      const animate = (currentTime: number) => {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+
+        // Easing function
+        const eased = 1 - Math.pow(1 - progress, 3);
+        const current = startValue + diff * eased;
+
+        setDisplayValue(Math.round(current));
+
+        if (progress < 1) {
+          animationRef.current = requestAnimationFrame(animate);
+        } else {
+          setDisplayValue(endValue);
+        }
+      };
+
+      animationRef.current = requestAnimationFrame(animate);
+    } else if (externalValue > 0 && maxValueRef.current === 0) {
+      // Initial value
+      maxValueRef.current = externalValue;
+      setDisplayValue(externalValue);
+    }
+
+    return () => {
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
+    };
+  }, [externalValue]);
+
+  return displayValue;
+}
+
+// ===========================================
+// SMOOTH COUNTER COMPONENT (monotonic - never decreases)
 // ===========================================
 function SmoothCounter({
   value,
@@ -125,54 +187,7 @@ function SmoothCounter({
   value: number;
   className?: string;
 }) {
-  const [displayValue, setDisplayValue] = React.useState(value);
-  const prevValue = React.useRef(value);
-  const frameRef = React.useRef<number>();
-
-  React.useEffect(() => {
-    // Cancel any existing animation
-    if (frameRef.current) {
-      cancelAnimationFrame(frameRef.current);
-    }
-
-    const startValue = prevValue.current;
-    const diff = value - startValue;
-
-    // If no change or first render, just set
-    if (diff === 0 || startValue === 0) {
-      setDisplayValue(value);
-      prevValue.current = value;
-      return;
-    }
-
-    const duration = 200; // ms
-    const startTime = performance.now();
-
-    const animate = (currentTime: number) => {
-      const elapsed = currentTime - startTime;
-      const progress = Math.min(elapsed / duration, 1);
-
-      // Smooth easing
-      const eased = 1 - Math.pow(1 - progress, 3);
-      const current = startValue + diff * eased;
-
-      setDisplayValue(current);
-
-      if (progress < 1) {
-        frameRef.current = requestAnimationFrame(animate);
-      } else {
-        prevValue.current = value;
-      }
-    };
-
-    frameRef.current = requestAnimationFrame(animate);
-
-    return () => {
-      if (frameRef.current) {
-        cancelAnimationFrame(frameRef.current);
-      }
-    };
-  }, [value]);
+  const displayValue = useMonotonicCounter(value);
 
   return (
     <span className={className} style={{ fontVariantNumeric: "tabular-nums" }}>
@@ -199,14 +214,15 @@ function DateRangePicker({
     dateRange?.from || new Date()
   );
 
-  // Update display when calendar selection changes
   React.useEffect(() => {
     if (dateRange?.from && dateRange?.to) {
       if (dateRange.from.getTime() === dateRange.to.getTime()) {
         setValue(formatDateDisplay(dateRange.from));
       } else {
         setValue(
-          `${formatDateDisplay(dateRange.from)} - ${formatDateDisplay(dateRange.to)}`
+          `${formatDateDisplay(dateRange.from)} - ${formatDateDisplay(
+            dateRange.to
+          )}`
         );
       }
     } else if (dateRange?.from) {
@@ -287,7 +303,9 @@ function DateRangePicker({
           Showing{" "}
           <span className="text-white/60 font-medium">
             {dateRange.to && dateRange.from.getTime() !== dateRange.to.getTime()
-              ? `${formatDateDisplay(dateRange.from)} to ${formatDateDisplay(dateRange.to)}`
+              ? `${formatDateDisplay(dateRange.from)} to ${formatDateDisplay(
+                  dateRange.to
+                )}`
               : formatDateDisplay(dateRange.from)}
           </span>
         </div>
@@ -311,6 +329,7 @@ export function WebsiteTrafficChart() {
   );
   const [customData, setCustomData] = React.useState<CustomDateData[]>([]);
 
+  // Monotonic counters - these only go up
   const [totalTraffic, setTotalTraffic] = React.useState(0);
   const [todayTraffic, setTodayTraffic] = React.useState(0);
   const [percentChange, setPercentChange] = React.useState(0);
@@ -329,9 +348,16 @@ export function WebsiteTrafficChart() {
   const lastTimeRef = React.useRef(Date.now());
   const rateHistoryRef = React.useRef<number[]>([]);
   const wsRef = React.useRef<WebSocket | null>(null);
+  const reconnectAttemptRef = React.useRef(0);
+  const isUnmountingRef = React.useRef(false);
+  const isConnectingRef = React.useRef(false);
+
+  // Maximum values seen (for monotonic behavior)
+  const maxTotalRef = React.useRef(0);
+  const maxTodayRef = React.useRef(0);
 
   // ---- CALCULATE REQUESTS PER SECOND ----
-  const updateRequestRate = React.useCallback((currentTraffic: number) => {
+  const updateRequestRate = (currentTraffic: number) => {
     const now = Date.now();
     const timeDiff = (now - lastTimeRef.current) / 1000;
 
@@ -352,35 +378,43 @@ export function WebsiteTrafficChart() {
 
     lastTrafficRef.current = currentTraffic;
     lastTimeRef.current = now;
-  }, []);
+  };
 
-  // ---- PROCESS INCOMING DATA ----
-  const processData = React.useCallback(
-    (data: any) => {
-      // Process daily data
-      if (data.data && Array.isArray(data.data)) {
-        // Keep chronological order from backend (oldest to newest)
-        // Backend already returns data in chronological order
-        const dailyDataWithDates = data.data.map((d: any) => ({
-          day: d.day,
-          traffic: d.traffic || 0,
-          date: d.date, // Preserve date for chronological sorting
-        }));
-        setDailyData(dailyDataWithDates);
-      }
+  // ---- PROCESS INCOMING DATA (with monotonic enforcement) ----
+  const processData = (data: any) => {
+    // Process daily data
+    if (data.data && Array.isArray(data.data)) {
+      const dailyDataWithDates = data.data.map((d: any) => ({
+        day: d.day,
+        traffic: d.traffic || 0,
+        date: d.date,
+      }));
+      setDailyData(dailyDataWithDates);
+    }
 
-      setTotalTraffic(data.total || 0);
-      setTodayTraffic(data.currentDay || 0);
-      setPercentChange(data.percentageChange || 0);
-      updateRequestRate(data.currentDay || 0);
+    // Enforce monotonic behavior for totals
+    const newTotal = data.total || 0;
+    const newToday = data.currentDay || 0;
 
-      if (isLoading) setIsLoading(false);
-    },
-    [updateRequestRate, isLoading]
-  );
+    // Only update if new value is higher (monotonic)
+    if (newTotal >= maxTotalRef.current) {
+      console.log("newTotal", newTotal);
+      maxTotalRef.current = newTotal;
+      setTotalTraffic(newTotal);
+    }
+
+    if (newToday >= maxTodayRef.current) {
+      maxTodayRef.current = newToday;
+      setTodayTraffic(newToday);
+      updateRequestRate(newToday);
+    }
+
+    setPercentChange(data.percentageChange || 0);
+    setIsLoading(false);
+  };
 
   // ---- FETCH DATA FROM API ----
-  const fetchData = React.useCallback(async () => {
+  const fetchData = async () => {
     try {
       const response = await fetch(`${API_URL}/api/traffic`);
       if (!response.ok) return;
@@ -392,7 +426,7 @@ export function WebsiteTrafficChart() {
     } catch (error) {
       console.error("Failed to fetch:", error);
     }
-  }, [processData]);
+  };
 
   // ---- FETCH CUSTOM DATE RANGE DATA ----
   const fetchCustomData = React.useCallback(async () => {
@@ -423,52 +457,161 @@ export function WebsiteTrafficChart() {
     }
   }, [dateRange]);
 
-  // ---- WEBSOCKET CONNECTION ----
+  // ---- WEBSOCKET CONNECTION WITH RECONNECTION ----
   React.useEffect(() => {
     let reconnectTimer: NodeJS.Timeout;
+    let pingInterval: NodeJS.Timeout;
+    let pollInterval: NodeJS.Timeout;
+    let rateDecayInterval: NodeJS.Timeout;
+
+    // Reset flags on mount
+    isUnmountingRef.current = false;
+    isConnectingRef.current = false;
 
     const connect = () => {
+      // Prevent multiple simultaneous connections
+      if (isConnectingRef.current || isUnmountingRef.current) return;
+
+      // Close any existing connection first
+      if (wsRef.current) {
+        wsRef.current.onclose = null; // Prevent reconnect loop
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+
+      isConnectingRef.current = true;
+
       try {
         const ws = new WebSocket(WS_URL);
         wsRef.current = ws;
 
         ws.onopen = () => {
+          isConnectingRef.current = false;
+          if (isUnmountingRef.current) {
+            ws.close();
+            return;
+          }
+
           setIsConnected(true);
+          reconnectAttemptRef.current = 0;
           ws.send(JSON.stringify({ type: "getTraffic" }));
+
+          // Keep connection alive with periodic pings
+          clearInterval(pingInterval);
+          pingInterval = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "ping" }));
+            }
+          }, 25000);
         };
 
         ws.onmessage = (event) => {
           try {
             const message = JSON.parse(event.data);
             if (message.type === "traffic") {
-              processData(message);
+              // Process data inline (not using callback to avoid stale closures)
+              if (message.data && Array.isArray(message.data)) {
+                setDailyData(
+                  message.data.map((d: any) => ({
+                    day: d.day,
+                    traffic: d.traffic || 0,
+                    date: d.date,
+                  }))
+                );
+              }
+
+              console.log("message", message);
+              const newTotal = message.total || 0;
+              const newToday = message.currentDay || 0;
+
+              // Monotonic updates using refs
+              if (newTotal >= maxTotalRef.current) {
+                console.log("newTotal", newTotal);
+                maxTotalRef.current = newTotal;
+                setTotalTraffic(newTotal);
+              }
+
+              if (newToday >= maxTodayRef.current) {
+                maxTodayRef.current = newToday;
+                setTodayTraffic(newToday);
+
+                // Update request rate
+                const now = Date.now();
+                const timeDiff = (now - lastTimeRef.current) / 1000;
+                if (timeDiff > 0.1 && lastTrafficRef.current > 0) {
+                  const trafficDiff = newToday - lastTrafficRef.current;
+                  if (trafficDiff > 0) {
+                    const instantRate = trafficDiff / timeDiff;
+                    rateHistoryRef.current.push(instantRate);
+                    if (rateHistoryRef.current.length > 3) {
+                      rateHistoryRef.current.shift();
+                    }
+                    const avgRate =
+                      rateHistoryRef.current.reduce((a, b) => a + b, 0) /
+                      rateHistoryRef.current.length;
+                    setRequestsPerSecond(avgRate);
+                  }
+                }
+                lastTrafficRef.current = newToday;
+                lastTimeRef.current = now;
+              }
+
+              setPercentChange(message.percentageChange || 0);
+              setIsLoading(false);
             }
           } catch {
-            // Ignore
+            // Ignore parse errors
           }
         };
 
         ws.onclose = () => {
+          isConnectingRef.current = false;
           setIsConnected(false);
-          reconnectTimer = setTimeout(connect, 2000);
+          clearInterval(pingInterval);
+
+          // Only reconnect if not unmounting
+          if (!isUnmountingRef.current) {
+            const backoffTime = Math.min(
+              1000 * Math.pow(2, reconnectAttemptRef.current),
+              30000
+            );
+            reconnectAttemptRef.current++;
+            reconnectTimer = setTimeout(connect, backoffTime);
+          }
         };
 
-        ws.onerror = () => setIsConnected(false);
+        ws.onerror = () => {
+          isConnectingRef.current = false;
+          setIsConnected(false);
+        };
       } catch {
-        reconnectTimer = setTimeout(connect, 2000);
+        isConnectingRef.current = false;
+        // Retry on connection error
+        if (!isUnmountingRef.current) {
+          const backoffTime = Math.min(
+            1000 * Math.pow(2, reconnectAttemptRef.current),
+            30000
+          );
+          reconnectAttemptRef.current++;
+          reconnectTimer = setTimeout(connect, backoffTime);
+        }
       }
     };
 
+    // Initial fetch
     fetchData();
+
+    // Connect WebSocket
     connect();
 
-    const pollInterval = setInterval(() => {
+    // Fallback polling when WebSocket is disconnected
+    pollInterval = setInterval(() => {
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
         fetchData();
       }
-    }, 1000);
+    }, 2000);
 
-    const rateDecayInterval = setInterval(() => {
+    rateDecayInterval = setInterval(() => {
       const timeSinceUpdate = (Date.now() - lastTimeRef.current) / 1000;
       if (timeSinceUpdate > 1.5) {
         setRequestsPerSecond((prev) => (prev < 0.1 ? 0 : prev * 0.7));
@@ -476,12 +619,20 @@ export function WebsiteTrafficChart() {
     }, 300);
 
     return () => {
+      isUnmountingRef.current = true;
       clearTimeout(reconnectTimer);
       clearInterval(pollInterval);
       clearInterval(rateDecayInterval);
-      wsRef.current?.close();
+      clearInterval(pingInterval);
+
+      if (wsRef.current) {
+        wsRef.current.onclose = null; // Prevent reconnect on cleanup
+        wsRef.current.close();
+        wsRef.current = null;
+      }
     };
-  }, [fetchData, processData]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Empty deps - only run once on mount
 
   // ---- FETCH CUSTOM DATA WHEN DATE RANGE CHANGES ----
   React.useEffect(() => {
@@ -505,7 +656,6 @@ export function WebsiteTrafficChart() {
         baseData = transformDailyData(dailyData);
     }
 
-    // Add iOS and Android split data (65% iOS, 35% Android)
     if (deviceMode === "split") {
       return baseData.map((point) => ({
         ...point,
@@ -556,7 +706,7 @@ export function WebsiteTrafficChart() {
     try {
       let url = `${API_URL}/api/export/csv`;
       const params = new URLSearchParams();
-      
+
       if (timePeriod === "custom" && dateRange?.from && dateRange?.to) {
         params.append("start", formatDateAPI(dateRange.from));
         params.append("end", formatDateAPI(dateRange.to));
@@ -576,7 +726,9 @@ export function WebsiteTrafficChart() {
       const downloadUrl = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = downloadUrl;
-      link.download = `traffic-events-${new Date().toISOString().split("T")[0]}.csv`;
+      link.download = `traffic-events-${
+        new Date().toISOString().split("T")[0]
+      }.csv`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -591,7 +743,7 @@ export function WebsiteTrafficChart() {
     try {
       let url = `${API_URL}/api/export/pdf`;
       const params = new URLSearchParams();
-      
+
       if (timePeriod === "custom" && dateRange?.from && dateRange?.to) {
         params.append("start", formatDateAPI(dateRange.from));
         params.append("end", formatDateAPI(dateRange.to));
@@ -611,7 +763,9 @@ export function WebsiteTrafficChart() {
       const downloadUrl = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = downloadUrl;
-      link.download = `traffic-events-${new Date().toISOString().split("T")[0]}.pdf`;
+      link.download = `traffic-events-${
+        new Date().toISOString().split("T")[0]
+      }.pdf`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -775,13 +929,7 @@ export function WebsiteTrafficChart() {
                     <stop offset="100%" stopColor="#3b82f6" stopOpacity={0} />
                   </linearGradient>
                   {/* iOS gradient (blue) */}
-                  <linearGradient
-                    id="iosGradient"
-                    x1="0"
-                    y1="0"
-                    x2="0"
-                    y2="1"
-                  >
+                  <linearGradient id="iosGradient" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.4} />
                     <stop offset="100%" stopColor="#3b82f6" stopOpacity={0} />
                   </linearGradient>

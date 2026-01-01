@@ -1,7 +1,7 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { config } from "../config/index.js";
-import * as schema from "./schema.js";
+import { config } from "../config";
+import * as schema from "./schema";
 
 const client = postgres(config.databaseUrl, {
   max: 10,
@@ -10,4 +10,4 @@ const client = postgres(config.databaseUrl, {
 });
 
 export const db = drizzle(client, { schema });
-export * from "./schema.js";
+export * from "./schema";

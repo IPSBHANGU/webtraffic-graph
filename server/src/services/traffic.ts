@@ -7,68 +7,111 @@ import {
   trafficDaily,
   trafficWeekly,
   trafficMonthly,
-} from "../db/index.js";
+} from "../db";
+import {
+  queueTrafficEvent,
+  queueTrafficEvents,
+  getBufferSize,
+  forceFlush,
+  syncPendingMinutes,
+} from "../queues/event.queue";
+import { redisCounter } from "../redis";
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 export class TrafficService {
-  
-  private pendingByMinute = new Map<string, number>();
-  private savedByDate = new Map<string, number>();
-  private flushTimer: NodeJS.Timeout | null = null;
+  private aggregationTimer: NodeJS.Timeout | null = null;
+  private hourlyAggTimer: NodeJS.Timeout | null = null;
+  private dailyAggTimer: NodeJS.Timeout | null = null;
+  private weeklyAggTimer: NodeJS.Timeout | null = null;
+  private monthlyAggTimer: NodeJS.Timeout | null = null;
+  private syncTimer: NodeJS.Timeout | null = null;
+
+  // Cache for reducing DB queries
   private cache = {
     lastUpdate: 0,
     last7Days: [] as Array<{ day: string; traffic: number; date: string }>,
+    cacheDuration: 1000, // 1 second cache
   };
-  private totalHits = 0;
-  private lastNotifiedThreshold = 0;
-  private readonly THRESHOLD_INTERVAL = 10000; 
 
   constructor() {
-    this.flushTimer = setInterval(() => this.flushToDatabase(), 4000);
-    // Run aggregations every minute
-    setInterval(() => this.aggregateToHour(), 60000);
-    // Run aggregations every hour
-    setInterval(() => this.aggregateToDay(), 3600000);
-    // Run aggregations every day at midnight
-    setInterval(() => this.aggregateToWeek(), 86400000);
-    setInterval(() => this.aggregateToMonth(), 86400000);
-    // Initialize total hits from database
-    this.initializeTotalHits();
-    console.log("📊 Traffic service started with real-time aggregation");
+    // Initialize Redis counters from DB
+    this.initializeRedisCounters();
+
+    // Periodic sync of pending minutes
+    this.syncTimer = setInterval(() => syncPendingMinutes(), 5000);
+
+    // Aggregation timers
+    this.hourlyAggTimer = setInterval(() => this.aggregateToHour(), 60000);
+    this.dailyAggTimer = setInterval(() => this.aggregateToDay(), 3600000);
+    this.weeklyAggTimer = setInterval(() => this.aggregateToWeek(), 86400000);
+    this.monthlyAggTimer = setInterval(() => this.aggregateToMonth(), 86400000);
+
+    console.log(
+      "📊 Traffic service started with Redis-backed real-time tracking"
+    );
   }
 
-  private async initializeTotalHits() {
+  private async initializeRedisCounters() {
     try {
-      // Get total from daily aggregation (most efficient)
-      const totalResult = await db
-        .select({ total: sql<number>`COALESCE(SUM(${trafficDaily.count}), 0)` })
-        .from(trafficDaily);
-      
-      const dbTotal = Number(totalResult[0]?.total) || 0;
-      
-      // Also add pending hits
-      const pendingTotal = this.getPendingCount();
-      
-      this.totalHits = dbTotal + pendingTotal;
-      
-      // Set last notified threshold to the highest completed threshold
-      this.lastNotifiedThreshold = Math.floor(this.totalHits / this.THRESHOLD_INTERVAL) * this.THRESHOLD_INTERVAL;
-      
-      console.log(`📊 Initialized total hits: ${this.totalHits.toLocaleString()} (last threshold: ${this.lastNotifiedThreshold.toLocaleString()})`);
+      const now = new Date();
+      const startOfWeek = new Date(now);
+      startOfWeek.setDate(now.getDate() - now.getDay());
+      startOfWeek.setHours(0, 0, 0, 0);
+
+      // Initialize Redis counters for each day of the current week from DB
+      for (let i = 0; i < 7; i++) {
+        const date = new Date(startOfWeek);
+        date.setDate(startOfWeek.getDate() + i);
+        if (date > now) break;
+
+        const dateStr = this.formatDate(date);
+        const dayStart = new Date(date);
+        dayStart.setHours(0, 0, 0, 0);
+        const dayEnd = new Date(date);
+        dayEnd.setHours(23, 59, 59, 999);
+
+        // Get DB count for this day
+        const dbResult = await db
+          .select({
+            total: sql<number>`COALESCE(SUM(${trafficMinute.count}), 0)`,
+          })
+          .from(trafficMinute)
+          .where(
+            and(
+              gte(trafficMinute.timestamp, dayStart),
+              lte(trafficMinute.timestamp, dayEnd)
+            )
+          );
+
+        const dbCount = Number(dbResult[0]?.total) || 0;
+
+        // Initialize Redis counter (only if Redis count is lower)
+        await redisCounter.initializeFromDb(dateStr, dbCount);
+      }
+
+      const weekTotal = await redisCounter.getWeekTotal();
+      const todayStr = this.formatDate(now);
+      const todayTotal = await redisCounter.get(todayStr);
+
+      console.log(
+        `📊 Initialized: week total=${weekTotal.toLocaleString()}, today=${todayTotal.toLocaleString()}`
+      );
     } catch (err: any) {
-      console.error("Error initializing total hits:", err.message);
-      // Continue with 0 if initialization fails
-      this.totalHits = 0;
-      this.lastNotifiedThreshold = 0;
+      console.error("Error initializing Redis counters:", err.message);
     }
   }
 
-  recordHit(targetDate?: Date, ipAddress?: string, userAgent?: string) {
-    this.recordHits(1, targetDate, ipAddress, userAgent);
+  async recordHit(targetDate?: Date, ipAddress?: string, userAgent?: string) {
+    await this.recordHits(1, targetDate, ipAddress, userAgent);
   }
 
-  recordHits(count: number, targetDate?: Date, ipAddress?: string, userAgent?: string) {
+  async recordHits(
+    count: number,
+    targetDate?: Date,
+    ipAddress?: string,
+    userAgent?: string
+  ) {
     const baseDate = targetDate || new Date();
     const now = new Date();
 
@@ -82,80 +125,42 @@ export class TrafficService {
       0
     );
 
-    const minuteKey = minuteTimestamp.toISOString();
-    const current = this.pendingByMinute.get(minuteKey) || 0;
-    this.pendingByMinute.set(minuteKey, current + count);
-
-    // Update total hits and check for threshold
-    this.totalHits += count;
-    this.checkAndNotifyThreshold();
-
     const dateKey = this.formatDate(baseDate);
+
+    // Queue events for batch processing (which also updates Redis counters)
+    const events = Array(count)
+      .fill(null)
+      .map(() => ({
+        timestamp: minuteTimestamp,
+        ipAddress,
+        userAgent,
+      }));
+
+    const { todayTotal, weekTotal } = await queueTrafficEvents(events);
+
     console.log(
       `📥 +${count} for ${DAY_NAMES[baseDate.getDay()]} (${dateKey} @ ${now
         .getHours()
         .toString()
-        .padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")})`
+        .padStart(2, "0")}:${now
+        .getMinutes()
+        .toString()
+        .padStart(2, "0")}) [today: ${todayTotal}, week: ${weekTotal}]`
     );
 
-    
-    const storeRawEvents = process.env.STORE_RAW_EVENTS === "true";
-    if (storeRawEvents) {
-      // Save each hit as a separate event with IP and user agent
-      for (let i = 0; i < count; i++) {
-        this.saveRawEvent(minuteTimestamp, ipAddress, userAgent).catch((err: any) => {
-          console.error("Error saving raw event:", err.message);
-        });
-      }
-    }
+    // Trigger aggregation check
+    this.triggerAggregation(minuteTimestamp);
   }
 
-  private async saveRawEvent(timestamp: Date, ipAddress?: string, userAgent?: string) {
-    try {
-      await db.insert(trafficEvents).values({
-        timestamp,
-        ipAddress,
-        userAgent,
-      });
-    } catch (err: any) {
-      console.error("DB error saving raw event:", err.message);
+  private triggerAggregation(minuteTimestamp: Date) {
+    // Debounce aggregation
+    if (this.aggregationTimer) {
+      clearTimeout(this.aggregationTimer);
     }
-  }
 
-  private checkAndNotifyThreshold() {
-    const currentThreshold = Math.floor(this.totalHits / this.THRESHOLD_INTERVAL) * this.THRESHOLD_INTERVAL;
-    
-    // Only notify if we've crossed a new threshold
-    if (currentThreshold > this.lastNotifiedThreshold && currentThreshold > 0) {
-      this.lastNotifiedThreshold = currentThreshold;
-      this.sendThresholdNotification(currentThreshold).catch((err: any) => {
-        console.error("Error sending threshold notification:", err.message);
-      });
-    }
-  }
-
-  private async sendThresholdNotification(threshold: number) {
-    try {
-      const message = `Traffic Alert: ${threshold.toLocaleString()} requests reached!\n\nTotal traffic: ${this.totalHits.toLocaleString()} requests`;
-      
-      const response = await fetch(`https://ntfy.sh/realtime_web_traffic`, {
-        method: "POST",
-        headers: {
-          "Title": `Traffic Milestone: ${threshold.toLocaleString()} Requests`,
-          "Priority": "4", // High priority
-          "Tags": "warning,traffic"
-        },
-        body: message
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to send ntfy notification: ${response.statusText}`);
-      }
-
-      console.log(`🔔 Sent threshold notification for ${threshold.toLocaleString()} requests`);
-    } catch (err: any) {
-      console.error("Error sending threshold notification:", err.message);
-    }
+    this.aggregationTimer = setTimeout(() => {
+      this.checkAndAggregateToHour(minuteTimestamp);
+    }, 2000);
   }
 
   private formatDate(date: Date): string {
@@ -165,73 +170,19 @@ export class TrafficService {
     return `${y}-${m}-${d}`;
   }
 
-  private async flushToDatabase() {
-    if (this.pendingByMinute.size === 0) return;
-
-    const toFlush = new Map(this.pendingByMinute);
-    this.pendingByMinute.clear();
-
-    for (const [minuteKey, count] of toFlush) {
-      if (count === 0) continue;
-
-      const timestamp = new Date(minuteKey);
-      if (Number.isNaN(timestamp.getTime())) {
-        continue;
-      }
-
-      const now = new Date();
-      const dateKey = this.formatDate(timestamp);
-
-      try {
-        await db
-          .insert(trafficMinute)
-          .values({ timestamp, count, updatedAt: now })
-          .onConflictDoUpdate({
-            target: trafficMinute.timestamp,
-            set: {
-              count: sql`${trafficMinute.count} + ${count}`,
-              updatedAt: now,
-            },
-          });
-
-        const saved = this.savedByDate.get(dateKey) || 0;
-        this.savedByDate.set(dateKey, saved + count);
-        console.log(
-          `💾 Saved ${count} for ${
-            DAY_NAMES[timestamp.getDay()]
-          } (${dateKey} @ ${timestamp
-            .getHours()
-            .toString()
-            .padStart(2, "0")}:${timestamp
-            .getMinutes()
-            .toString()
-            .padStart(2, "0")})`
-        );
-
-        this.cache.lastUpdate = 0;
-
-        // Trigger hour aggregation check after saving minute data
-        this.checkAndAggregateToHour(timestamp);
-      } catch (err: any) {
-        console.error(`DB error for ${dateKey}:`, err.message);
-        const current = this.pendingByMinute.get(minuteKey) || 0;
-        this.pendingByMinute.set(minuteKey, current + count);
-      }
-    }
-  }
-
   // Aggregate 60 minutes into 1 hour
   private async checkAndAggregateToHour(minuteTimestamp: Date) {
     const hourStart = new Date(minuteTimestamp);
     hourStart.setMinutes(0, 0, 0);
-    
-    // Check if we have 60 minutes for this hour
+
     const hourEnd = new Date(hourStart);
     hourEnd.setMinutes(59, 59, 999);
-    
+
     try {
       const minuteSum = await db
-        .select({ total: sql<number>`COALESCE(SUM(${trafficMinute.count}), 0)` })
+        .select({
+          total: sql<number>`COALESCE(SUM(${trafficMinute.count}), 0)`,
+        })
         .from(trafficMinute)
         .where(
           and(
@@ -239,9 +190,9 @@ export class TrafficService {
             lte(trafficMinute.timestamp, hourEnd)
           )
         );
-      
+
       const total = Number(minuteSum[0]?.total) || 0;
-      
+
       if (total > 0) {
         await db
           .insert(trafficHourly)
@@ -257,8 +208,7 @@ export class TrafficService {
               updatedAt: new Date(),
             },
           });
-        
-        // Trigger day aggregation
+
         this.checkAndAggregateToDay(hourStart);
       }
     } catch (err: any) {
@@ -270,13 +220,15 @@ export class TrafficService {
   private async checkAndAggregateToDay(hourTimestamp: Date) {
     const dayStart = new Date(hourTimestamp);
     dayStart.setHours(0, 0, 0, 0);
-    
+
     const dayEnd = new Date(dayStart);
     dayEnd.setHours(23, 59, 59, 999);
-    
+
     try {
       const hourSum = await db
-        .select({ total: sql<number>`COALESCE(SUM(${trafficHourly.count}), 0)` })
+        .select({
+          total: sql<number>`COALESCE(SUM(${trafficHourly.count}), 0)`,
+        })
         .from(trafficHourly)
         .where(
           and(
@@ -284,9 +236,9 @@ export class TrafficService {
             lte(trafficHourly.timestamp, dayEnd)
           )
         );
-      
+
       const total = Number(hourSum[0]?.total) || 0;
-      
+
       if (total > 0) {
         await db
           .insert(trafficDaily)
@@ -303,8 +255,7 @@ export class TrafficService {
               updatedAt: new Date(),
             },
           });
-        
-        // Trigger week and month aggregation
+
         this.checkAndAggregateToWeek(dayStart);
         this.checkAndAggregateToMonth(dayStart);
       }
@@ -317,17 +268,16 @@ export class TrafficService {
   private async checkAndAggregateToWeek(dayTimestamp: Date) {
     const date = new Date(dayTimestamp);
     date.setHours(0, 0, 0, 0);
-    
-    // Get week start (Sunday)
+
     const dayOfWeek = date.getDay();
     const weekStart = new Date(date);
     weekStart.setDate(date.getDate() - dayOfWeek);
     weekStart.setHours(0, 0, 0, 0);
-    
+
     const weekEnd = new Date(weekStart);
     weekEnd.setDate(weekStart.getDate() + 6);
     weekEnd.setHours(23, 59, 59, 999);
-    
+
     try {
       const daySum = await db
         .select({ total: sql<number>`COALESCE(SUM(${trafficDaily.count}), 0)` })
@@ -338,14 +288,13 @@ export class TrafficService {
             lte(trafficDaily.date, weekEnd)
           )
         );
-      
+
       const total = Number(daySum[0]?.total) || 0;
-      
+
       if (total > 0) {
         const year = weekStart.getFullYear();
         const weekNumber = this.getWeekNumber(weekStart);
-        
-        // Check if week exists, then update or insert
+
         const existing = await db
           .select()
           .from(trafficWeekly)
@@ -356,7 +305,7 @@ export class TrafficService {
             )
           )
           .limit(1);
-        
+
         if (existing.length > 0) {
           await db
             .update(trafficWeekly)
@@ -389,13 +338,27 @@ export class TrafficService {
   private async checkAndAggregateToMonth(dayTimestamp: Date) {
     const date = new Date(dayTimestamp);
     date.setHours(0, 0, 0, 0);
-    
-    // Get month start (first day of month)
-    const monthStart = new Date(date.getFullYear(), date.getMonth(), 1, 0, 0, 0, 0);
-    
-    // Get month end (last day of month)
-    const monthEnd = new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999);
-    
+
+    const monthStart = new Date(
+      date.getFullYear(),
+      date.getMonth(),
+      1,
+      0,
+      0,
+      0,
+      0
+    );
+
+    const monthEnd = new Date(
+      date.getFullYear(),
+      date.getMonth() + 1,
+      0,
+      23,
+      59,
+      59,
+      999
+    );
+
     try {
       const daySum = await db
         .select({ total: sql<number>`COALESCE(SUM(${trafficDaily.count}), 0)` })
@@ -406,16 +369,16 @@ export class TrafficService {
             lte(trafficDaily.date, monthEnd)
           )
         );
-      
+
       const total = Number(daySum[0]?.total) || 0;
-      
+
       if (total > 0) {
         await db
           .insert(trafficMonthly)
           .values({
             monthStart,
             year: monthStart.getFullYear(),
-            month: monthStart.getMonth() + 1, // 1-12
+            month: monthStart.getMonth() + 1,
             count: total,
             updatedAt: new Date(),
           })
@@ -433,14 +396,16 @@ export class TrafficService {
   }
 
   private getWeekNumber(date: Date): number {
-    const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+    const d = new Date(
+      Date.UTC(date.getFullYear(), date.getMonth(), date.getDate())
+    );
     const dayNum = d.getUTCDay() || 7;
     d.setUTCDate(d.getUTCDate() + 4 - dayNum);
     const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-    return Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+    return Math.ceil(((d.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
   }
 
-  // Periodic aggregation functions (backup in case real-time misses)
+  // Periodic aggregation functions
   private async aggregateToHour() {
     const now = new Date();
     const oneHourAgo = new Date(now.getTime() - 3600000);
@@ -467,20 +432,21 @@ export class TrafficService {
     await this.checkAndAggregateToMonth(now);
   }
 
-  private getPendingForDate(dateKey: string): number {
-    // Sum all pending minute windows that fall on this date
-    let total = 0;
-    for (const [minuteKey, count] of this.pendingByMinute.entries()) {
-      const ts = new Date(minuteKey);
-      if (!Number.isNaN(ts.getTime()) && this.formatDate(ts) === dateKey) {
-        total += count;
-      }
-    }
-    return total;
-  }
-
+  // Get traffic for a specific date - uses Redis first, falls back to DB
   async getTrafficForDate(date: Date): Promise<number> {
     const dateKey = this.formatDate(date);
+    const now = new Date();
+    const todayKey = this.formatDate(now);
+
+    // For today or recent days, use Redis (real-time)
+    if (dateKey === todayKey || this.isWithinWeek(date)) {
+      const redisCount = await redisCounter.get(dateKey);
+      if (redisCount > 0) {
+        return redisCount;
+      }
+    }
+
+    // Fall back to DB
     const dayStart = new Date(
       date.getFullYear(),
       date.getMonth(),
@@ -499,15 +465,17 @@ export class TrafficService {
     );
 
     try {
+      // Try daily aggregate first
       const dailyResult = await db
         .select({ count: trafficDaily.count })
         .from(trafficDaily)
         .where(eq(trafficDaily.date, dayStart));
 
       if (dailyResult[0]?.count) {
-        return dailyResult[0].count + this.getPendingForDate(dateKey);
+        return dailyResult[0].count;
       }
 
+      // Fall back to minute aggregates
       const minuteResult = await db
         .select({
           total: sql<number>`COALESCE(SUM(${trafficMinute.count}), 0)`,
@@ -520,23 +488,37 @@ export class TrafficService {
           )
         );
 
-      return (
-        (Number(minuteResult[0]?.total) || 0) + this.getPendingForDate(dateKey)
-      );
+      return Number(minuteResult[0]?.total) || 0;
     } catch {
-      return this.getPendingForDate(dateKey);
+      return 0;
     }
   }
 
-  async getLast7Days() {
+  private isWithinWeek(date: Date): boolean {
     const now = new Date();
+    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    return date >= weekAgo;
+  }
+
+  async getLast7Days() {
+    const now = Date.now();
+
+    // Return cached data if fresh
+    if (
+      now - this.cache.lastUpdate < this.cache.cacheDuration &&
+      this.cache.last7Days.length > 0
+    ) {
+      return this.cache.last7Days;
+    }
+
     const result: Array<{ day: string; traffic: number; date: string }> = [];
+    const today = new Date();
 
     for (let i = 6; i >= 0; i--) {
       const date = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        now.getDate() - i,
+        today.getFullYear(),
+        today.getMonth(),
+        today.getDate() - i,
         12,
         0,
         0
@@ -551,26 +533,35 @@ export class TrafficService {
     }
 
     this.cache.last7Days = result;
-    this.cache.lastUpdate = Date.now();
+    this.cache.lastUpdate = now;
     return result;
   }
 
-  async getTodayTraffic() {
-    return this.getTrafficForDate(new Date());
+  async getTodayTraffic(): Promise<number> {
+    const todayStr = this.formatDate(new Date());
+    return await redisCounter.get(todayStr);
   }
 
-  async getTotalTraffic() {
-    const days = await this.getLast7Days();
-    return days.reduce((sum, d) => sum + d.traffic, 0);
+  async getTotalTraffic(): Promise<number> {
+    // Get week total from Redis (real-time)
+    return await redisCounter.getWeekTotal();
   }
 
-  async getPercentageChange() {
+  async getPercentageChange(): Promise<number> {
     return 0;
   }
 
   async getHourlyData() {
     const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const todayStart = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+      0,
+      0,
+      0,
+      0
+    );
     const result: Array<{ hour: number; label: string; traffic: number }> = [];
 
     try {
@@ -614,14 +605,14 @@ export class TrafficService {
   async getWeeklyData() {
     const now = new Date();
     const sixWeeksAgo = new Date(now.getTime() - 42 * 24 * 60 * 60 * 1000);
-    
+
     try {
       const weeklyData = await db
         .select()
         .from(trafficWeekly)
         .where(gte(trafficWeekly.weekStart, sixWeeksAgo))
         .orderBy(trafficWeekly.weekStart);
-      
+
       return weeklyData.map((w) => ({
         weekStart: w.weekStart.toISOString().split("T")[0],
         weekNumber: w.weekNumber,
@@ -637,14 +628,14 @@ export class TrafficService {
   async getMonthlyData() {
     const now = new Date();
     const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 6, 1);
-    
+
     try {
       const monthlyData = await db
         .select()
         .from(trafficMonthly)
         .where(gte(trafficMonthly.monthStart, sixMonthsAgo))
         .orderBy(trafficMonthly.monthStart);
-      
+
       return monthlyData.map((m) => ({
         monthStart: m.monthStart.toISOString().split("T")[0],
         year: m.year,
@@ -657,63 +648,58 @@ export class TrafficService {
     }
   }
 
-  getPendingCount() {
-    let total = 0;
-    for (const count of this.pendingByMinute.values()) {
-      total += count;
-    }
-    return total;
+  getPendingCount(): number {
+    return getBufferSize();
+  }
+
+  getQueueBufferSize(): number {
+    return getBufferSize();
   }
 
   async getCustomDateRangeData(startDate: Date, endDate: Date) {
     const result: Array<{ date: string; day: string; traffic: number }> = [];
-    
-    // Normalize dates
+
     const start = new Date(startDate);
     start.setHours(0, 0, 0, 0);
-    
+
     const end = new Date(endDate);
     end.setHours(23, 59, 59, 999);
-    
-    // Get all days in the range
+
     const current = new Date(start);
     while (current <= end) {
       const traffic = await this.getTrafficForDate(current);
       const dateStr = this.formatDate(current);
-      
+
       result.push({
         date: dateStr,
         day: DAY_NAMES[current.getDay()],
         traffic,
       });
-      
-      // Move to next day
+
       current.setDate(current.getDate() + 1);
     }
-    
+
     return result;
   }
 
   async getMultipleDatesData(dates: Date[]) {
     const result: Array<{ date: string; day: string; traffic: number }> = [];
-    
+
     for (const date of dates) {
       const normalized = new Date(date);
       normalized.setHours(0, 0, 0, 0);
-      
+
       const traffic = await this.getTrafficForDate(normalized);
       const dateStr = this.formatDate(normalized);
-      
+
       result.push({
         date: dateStr,
         day: DAY_NAMES[normalized.getDay()],
         traffic,
       });
     }
-    
-    // Sort by date
+
     result.sort((a, b) => a.date.localeCompare(b.date));
-    
     return result;
   }
 
@@ -726,15 +712,15 @@ export class TrafficService {
       if (endDate) {
         conditions.push(lte(trafficEvents.timestamp, endDate));
       }
-      
+
       let query = db.select().from(trafficEvents);
-      
+
       if (conditions.length > 0) {
         query = query.where(and(...conditions)) as any;
       }
-      
+
       const events = await query.orderBy(trafficEvents.timestamp);
-      
+
       for (const event of events) {
         yield event;
       }
@@ -753,13 +739,13 @@ export class TrafficService {
       if (endDate) {
         conditions.push(lte(trafficEvents.timestamp, endDate));
       }
-      
+
       let query = db.select().from(trafficEvents);
-      
+
       if (conditions.length > 0) {
         query = query.where(and(...conditions)) as any;
       }
-      
+
       return await query.orderBy(trafficEvents.timestamp);
     } catch (err: any) {
       console.error("Error fetching events:", err.message);
@@ -768,8 +754,14 @@ export class TrafficService {
   }
 
   async shutdown() {
-    if (this.flushTimer) clearInterval(this.flushTimer);
-    await this.flushToDatabase();
+    if (this.aggregationTimer) clearTimeout(this.aggregationTimer);
+    if (this.hourlyAggTimer) clearInterval(this.hourlyAggTimer);
+    if (this.dailyAggTimer) clearInterval(this.dailyAggTimer);
+    if (this.weeklyAggTimer) clearInterval(this.weeklyAggTimer);
+    if (this.monthlyAggTimer) clearInterval(this.monthlyAggTimer);
+    if (this.syncTimer) clearInterval(this.syncTimer);
+
+    await forceFlush();
     console.log("📊 Traffic service stopped");
   }
 }

@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
-import { TrafficService } from "../services/traffic.js";
-import { db, trafficEvents } from "../db/index.js";
+import { TrafficService } from "../services/traffic";
+import { db, trafficEvents } from "../db";
 import { gte, lte, and, sql } from "drizzle-orm";
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -8,7 +8,7 @@ const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 export function createTrafficRouter(trafficService: TrafficService) {
   const router = Router();
 
-  router.post("/hit", (req: Request, res: Response) => {
+  router.post("/hit", async (req: Request, res: Response) => {
     const dateStr = req.query.date as string;
     let targetDate: Date | undefined;
 
@@ -29,15 +29,16 @@ export function createTrafficRouter(trafficService: TrafficService) {
       }
     }
 
-    const ipAddress = 
+    const ipAddress =
       (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
       (req.headers["x-real-ip"] as string) ||
       req.socket.remoteAddress ||
       "unknown";
-    
+
     const userAgent = req.headers["user-agent"] || "unknown";
 
-    trafficService.recordHit(targetDate, ipAddress, userAgent);
+    // recordHit is now async
+    await trafficService.recordHit(targetDate, ipAddress, userAgent);
 
     const actualDate = targetDate || new Date();
     res.status(202).json({
@@ -49,14 +50,15 @@ export function createTrafficRouter(trafficService: TrafficService) {
 
   router.get("/traffic", async (req: Request, res: Response) => {
     try {
-      const [data, total, currentDay, hourlyData, weeklyData, monthlyData] = await Promise.all([
-        trafficService.getLast7Days(),
-        trafficService.getTotalTraffic(),
-        trafficService.getTodayTraffic(),
-        trafficService.getHourlyData(),
-        trafficService.getWeeklyData(),
-        trafficService.getMonthlyData(),
-      ]);
+      const [data, total, currentDay, hourlyData, weeklyData, monthlyData] =
+        await Promise.all([
+          trafficService.getLast7Days(),
+          trafficService.getTotalTraffic(),
+          trafficService.getTodayTraffic(),
+          trafficService.getHourlyData(),
+          trafficService.getWeeklyData(),
+          trafficService.getMonthlyData(),
+        ]);
 
       res.json({
         success: true,
@@ -104,7 +106,8 @@ export function createTrafficRouter(trafficService: TrafficService) {
       if (!startDate || !endDate) {
         return res.status(400).json({
           success: false,
-          error: "start and end date parameters are required (YYYY-MM-DD format)",
+          error:
+            "start and end date parameters are required (YYYY-MM-DD format)",
         });
       }
 
@@ -131,7 +134,9 @@ export function createTrafficRouter(trafficService: TrafficService) {
       });
     } catch (err) {
       console.error("Error fetching custom range:", err);
-      res.status(500).json({ success: false, error: "Failed to fetch custom range data" });
+      res
+        .status(500)
+        .json({ success: false, error: "Failed to fetch custom range data" });
     }
   });
 
@@ -148,7 +153,7 @@ export function createTrafficRouter(trafficService: TrafficService) {
       }
 
       const parsedDates = dates.map((d: string) => new Date(d));
-      
+
       if (parsedDates.some((d: Date) => isNaN(d.getTime()))) {
         return res.status(400).json({
           success: false,
@@ -167,7 +172,9 @@ export function createTrafficRouter(trafficService: TrafficService) {
       });
     } catch (err) {
       console.error("Error fetching custom dates:", err);
-      res.status(500).json({ success: false, error: "Failed to fetch custom dates data" });
+      res
+        .status(500)
+        .json({ success: false, error: "Failed to fetch custom dates data" });
     }
   });
 
@@ -192,7 +199,7 @@ export function createTrafficRouter(trafficService: TrafficService) {
 
       if (endDateStr) {
         endDate = new Date(endDateStr);
-        endDate.setHours(23, 59, 59, 999); // End of day
+        endDate.setHours(23, 59, 59, 999);
         if (isNaN(endDate.getTime())) {
           return res.status(400).json({
             success: false,
@@ -204,20 +211,20 @@ export function createTrafficRouter(trafficService: TrafficService) {
       res.setHeader("Content-Type", "text/csv");
       res.setHeader(
         "Content-Disposition",
-        `attachment; filename="traffic-events-${new Date().toISOString().split("T")[0]}.csv"`
+        `attachment; filename="traffic-events-${
+          new Date().toISOString().split("T")[0]
+        }.csv"`
       );
 
-      // Write CSV header
       res.write("Timestamp,IP Address,User Agent,Source,Metadata\n");
 
-      // Stream events in batches to handle millions of rows efficiently
       const BATCH_SIZE = 5000;
       let offset = 0;
       let hasMore = true;
 
       while (hasMore) {
         let query = db.select().from(trafficEvents);
-        
+
         if (startDate || endDate) {
           const conditions: any[] = [];
           if (startDate) {
@@ -299,17 +306,17 @@ export function createTrafficRouter(trafficService: TrafficService) {
         }
       }
 
-      // Get all events for summary statistics
       const events = await trafficService.getAllEvents(startDate, endDate);
 
-      // Calculate summary statistics
       const totalEvents = events.length;
-      const uniqueIPs = new Set(events.map(e => e.ipAddress).filter(Boolean)).size;
-      const uniqueUserAgents = new Set(events.map(e => e.userAgent).filter(Boolean)).size;
-      
-      // Top 10 IP addresses
+      const uniqueIPs = new Set(events.map((e) => e.ipAddress).filter(Boolean))
+        .size;
+      const uniqueUserAgents = new Set(
+        events.map((e) => e.userAgent).filter(Boolean)
+      ).size;
+
       const ipCounts = new Map<string, number>();
-      events.forEach(e => {
+      events.forEach((e) => {
         if (e.ipAddress) {
           ipCounts.set(e.ipAddress, (ipCounts.get(e.ipAddress) || 0) + 1);
         }
@@ -318,9 +325,8 @@ export function createTrafficRouter(trafficService: TrafficService) {
         .sort((a, b) => b[1] - a[1])
         .slice(0, 10);
 
-      // Top 10 User Agents
       const uaCounts = new Map<string, number>();
-      events.forEach(e => {
+      events.forEach((e) => {
         if (e.userAgent) {
           uaCounts.set(e.userAgent, (uaCounts.get(e.userAgent) || 0) + 1);
         }
@@ -329,18 +335,21 @@ export function createTrafficRouter(trafficService: TrafficService) {
         .sort((a, b) => b[1] - a[1])
         .slice(0, 10);
 
-      // Date range
-      const dateRange = startDate && endDate 
-        ? `${startDate.toISOString().split("T")[0]} to ${endDate.toISOString().split("T")[0]}`
-        : "All time";
+      const dateRange =
+        startDate && endDate
+          ? `${startDate.toISOString().split("T")[0]} to ${
+              endDate.toISOString().split("T")[0]
+            }`
+          : "All time";
 
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader(
         "Content-Disposition",
-        `attachment; filename="traffic-summary-${new Date().toISOString().split("T")[0]}.pdf"`
+        `attachment; filename="traffic-summary-${
+          new Date().toISOString().split("T")[0]
+        }.pdf"`
       );
 
-      // Generate PDF summary report
       const summaryText = `
 TRAFFIC EVENTS SUMMARY REPORT
 Generated: ${new Date().toISOString()}
@@ -354,16 +363,26 @@ Date Range: ${dateRange}
 
 TOP 10 IP ADDRESSES
 -------------------
-${topIPs.map(([ip, count], i) => `${i + 1}. ${ip} - ${count.toLocaleString()} requests`).join("\n")}
+${topIPs
+  .map(
+    ([ip, count], i) => `${i + 1}. ${ip} - ${count.toLocaleString()} requests`
+  )
+  .join("\n")}
 
 TOP 10 USER AGENTS
 ------------------
-${topUserAgents.map(([ua, count], i) => `${i + 1}. ${ua.substring(0, 80)}${ua.length > 80 ? "..." : ""} - ${count.toLocaleString()} requests`).join("\n")}
+${topUserAgents
+  .map(
+    ([ua, count], i) =>
+      `${i + 1}. ${ua.substring(0, 80)}${
+        ua.length > 80 ? "..." : ""
+      } - ${count.toLocaleString()} requests`
+  )
+  .join("\n")}
 
 NOTE: Full detailed data is available in CSV export.
 `;
 
-      // Simple PDF generation with summary
       const pdfContent = `%PDF-1.4
 1 0 obj
 <<
@@ -420,13 +439,24 @@ BT
 (TOP 10 IP ADDRESSES) Tj
 0 -20 Td
 /F1 10 Tf
-${topIPs.map(([ip, count], i) => `${i + 1}. ${ip} - ${count.toLocaleString()} requests`).join(" Tj\n0 -15 Td\n")} Tj
+${topIPs
+  .map(
+    ([ip, count], i) => `${i + 1}. ${ip} - ${count.toLocaleString()} requests`
+  )
+  .join(" Tj\n0 -15 Td\n")} Tj
 0 -30 Td
 /F1 12 Tf
 (TOP 10 USER AGENTS) Tj
 0 -20 Td
 /F1 10 Tf
-${topUserAgents.map(([ua, count], i) => `${i + 1}. ${ua.substring(0, 60)}${ua.length > 60 ? "..." : ""} - ${count.toLocaleString()}`).join(" Tj\n0 -15 Td\n")} Tj
+${topUserAgents
+  .map(
+    ([ua, count], i) =>
+      `${i + 1}. ${ua.substring(0, 60)}${
+        ua.length > 60 ? "..." : ""
+      } - ${count.toLocaleString()}`
+  )
+  .join(" Tj\n0 -15 Td\n")} Tj
 0 -30 Td
 /F1 9 Tf
 (Note: Full detailed data is available in CSV export.) Tj
