@@ -6,8 +6,8 @@ import {
 } from "../redis";
 import { db, trafficMinute } from "../db";
 
-const BATCH_SIZE = 100;  // Flush when batch size reached
-const FLUSH_INTERVAL_MS = 300;  // Flush every 300ms for near-instant persistence
+const BATCH_SIZE = 30;  // Flush when batch size reached
+const FLUSH_INTERVAL_MS = 200;  // Flush every 300ms for near-instant persistence
 
 interface TrafficEvent {
   timestamp: Date;
