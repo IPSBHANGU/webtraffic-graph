@@ -50,15 +50,17 @@ export function createTrafficRouter(trafficService: TrafficService) {
 
   router.get("/traffic", async (req: Request, res: Response) => {
     try {
-      const [data, total, currentDay, hourlyData, weeklyData, monthlyData] =
+      const [data, currentDay, hourlyData, weeklyData, monthlyData] =
         await Promise.all([
           trafficService.getLast7Days(),
-          trafficService.getTotalTraffic(),
           trafficService.getTodayTraffic(),
           trafficService.getHourlyData(),
           trafficService.getWeeklyData(),
           trafficService.getMonthlyData(),
         ]);
+
+      // Calculate total from daily data to match the chart
+      const total = data.reduce((sum, day) => sum + (day.traffic || 0), 0);
 
       res.json({
         success: true,
@@ -66,7 +68,7 @@ export function createTrafficRouter(trafficService: TrafficService) {
         hourlyData, // Hourly data for today
         weeklyData, // Weekly aggregated data
         monthlyData, // Monthly aggregated data
-        total,
+        total, // Sum of all daily data to match chart
         currentDay,
         percentageChange: 0,
         timestamp: Date.now(),

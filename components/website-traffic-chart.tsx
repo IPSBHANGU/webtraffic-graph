@@ -27,7 +27,7 @@ import type { DateRange } from "react-day-picker";
 // CONFIGURATION
 // ===========================================
 const API_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://webtraffic-graph.onrender.com";
+  process.env.NEXT_PUBLIC_API_URL || "https://webtraffic-graph.onrender.com";
 const WS_URL =
   process.env.NEXT_PUBLIC_WS_URL || "wss://webtraffic-graph.onrender.com";
 
