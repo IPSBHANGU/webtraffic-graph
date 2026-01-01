@@ -170,6 +170,19 @@ export const redisCounter = {
     }
   },
 
+  // Sync Redis counter from DB value (always use DB as source of truth)
+  async syncFromDb(date: string, dbValue: number): Promise<void> {
+    const key = REDIS_KEYS.dateCounter(date);
+    const currentValue = await counterClient.get(key);
+    const currentNum = parseInt(currentValue || "0", 10);
+
+    // Always update if DB value is different (DB is source of truth for sync)
+    if (currentNum !== dbValue) {
+      await counterClient.set(key, dbValue.toString());
+      await counterClient.expire(key, 8 * 24 * 60 * 60);
+    }
+  },
+
   // Get session increment count (monotonic)
   async getSessionIncrements(): Promise<number> {
     const result = await counterClient.get(REDIS_KEYS.sessionIncrements);

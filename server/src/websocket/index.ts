@@ -141,19 +141,15 @@ export class WebSocketManager {
         this.trafficService.getPercentageChange(),
       ]);
 
-      // Use Redis counts from the realtime message if available
-      // Otherwise get from traffic service
-      let total: number;
-      let currentDay: number;
+      // Calculate total from daily data to match the chart
+      const total = data.reduce((sum, day) => sum + (day.traffic || 0), 0);
 
+      // Use Redis count for current day if available, otherwise get from traffic service
+      let currentDay: number;
       if (realtimeData) {
-        total = realtimeData.weekTotal;
         currentDay = realtimeData.todayTotal;
       } else {
-        [total, currentDay] = await Promise.all([
-          this.trafficService.getTotalTraffic(),
-          this.trafficService.getTodayTraffic(),
-        ]);
+        currentDay = await this.trafficService.getTodayTraffic();
       }
 
       const message = JSON.stringify({
@@ -226,14 +222,16 @@ export class WebSocketManager {
     if (client.readyState !== WebSocket.OPEN) return;
 
     try {
-      const [data, hourlyData, total, currentDay, percentageChange] =
+      const [data, hourlyData, currentDay, percentageChange] =
         await Promise.all([
           this.trafficService.getLast7Days(),
           this.trafficService.getHourlyData(),
-          this.trafficService.getTotalTraffic(),
           this.trafficService.getTodayTraffic(),
           this.trafficService.getPercentageChange(),
         ]);
+
+      // Calculate total from daily data to match the chart
+      const total = data.reduce((sum, day) => sum + (day.traffic || 0), 0);
 
       const message = JSON.stringify({
         type: "traffic",

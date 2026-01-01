@@ -26,6 +26,7 @@ export class TrafficService {
   private weeklyAggTimer: NodeJS.Timeout | null = null;
   private monthlyAggTimer: NodeJS.Timeout | null = null;
   private syncTimer: NodeJS.Timeout | null = null;
+  private dbSyncTimer: NodeJS.Timeout | null = null;
 
   // Cache for reducing DB queries
   private cache = {
@@ -40,6 +41,11 @@ export class TrafficService {
 
     // Periodic sync of pending minutes
     this.syncTimer = setInterval(() => syncPendingMinutes(), 5000);
+
+    // Periodic sync of Redis from DB (every 8 seconds for faster UI updates on Render free tier)
+    this.dbSyncTimer = setInterval(() => this.syncRedisFromDb(), 8000);
+    // Initial sync after 5 seconds (to let DB initialize)
+    setTimeout(() => this.syncRedisFromDb(), 5000);
 
     // Aggregation timers
     this.hourlyAggTimer = setInterval(() => this.aggregateToHour(), 60000);
@@ -99,6 +105,76 @@ export class TrafficService {
       );
     } catch (err: any) {
       console.error("Error initializing Redis counters:", err.message);
+    }
+  }
+
+  // Sync Redis counters from DB (keeps Redis updated with DB data)
+  private async syncRedisFromDb() {
+    try {
+      const now = new Date();
+      const startOfWeek = new Date(now);
+      startOfWeek.setDate(now.getDate() - now.getDay());
+      startOfWeek.setHours(0, 0, 0, 0);
+
+      let syncedCount = 0;
+      let updatedCount = 0;
+
+      // Sync Redis counters for each day of the current week from DB
+      for (let i = 0; i < 7; i++) {
+        const date = new Date(startOfWeek);
+        date.setDate(startOfWeek.getDate() + i);
+        if (date > now) break;
+
+        const dateStr = this.formatDate(date);
+        const dayStart = new Date(date);
+        dayStart.setHours(0, 0, 0, 0);
+        const dayEnd = new Date(date);
+        dayEnd.setHours(23, 59, 59, 999);
+
+        // Try to get from trafficDaily first (more efficient)
+        const dailyResult = await db
+          .select({ count: trafficDaily.count })
+          .from(trafficDaily)
+          .where(eq(trafficDaily.date, dayStart))
+          .limit(1);
+
+        let dbCount = 0;
+        if (dailyResult[0]?.count) {
+          dbCount = dailyResult[0].count;
+        } else {
+          // Fall back to summing trafficMinute
+          const minuteResult = await db
+            .select({
+              total: sql<number>`COALESCE(SUM(${trafficMinute.count}), 0)`,
+            })
+            .from(trafficMinute)
+            .where(
+              and(
+                gte(trafficMinute.timestamp, dayStart),
+                lte(trafficMinute.timestamp, dayEnd)
+              )
+            );
+          dbCount = Number(minuteResult[0]?.total) || 0;
+        }
+
+        // Get current Redis value
+        const redisValue = await redisCounter.get(dateStr);
+
+        // Sync from DB (DB is source of truth)
+        if (redisValue !== dbCount) {
+          await redisCounter.syncFromDb(dateStr, dbCount);
+          updatedCount++;
+        }
+        syncedCount++;
+      }
+
+      if (updatedCount > 0) {
+        console.log(
+          `🔄 Synced Redis from DB: ${updatedCount}/${syncedCount} days updated`
+        );
+      }
+    } catch (err: any) {
+      console.error("Error syncing Redis from DB:", err.message);
     }
   }
 
@@ -255,6 +331,10 @@ export class TrafficService {
               updatedAt: new Date(),
             },
           });
+
+        // Sync Redis after daily aggregation
+        const dateStr = this.formatDate(dayStart);
+        await redisCounter.syncFromDb(dateStr, total);
 
         this.checkAndAggregateToWeek(dayStart);
         this.checkAndAggregateToMonth(dayStart);
@@ -760,6 +840,7 @@ export class TrafficService {
     if (this.weeklyAggTimer) clearInterval(this.weeklyAggTimer);
     if (this.monthlyAggTimer) clearInterval(this.monthlyAggTimer);
     if (this.syncTimer) clearInterval(this.syncTimer);
+    if (this.dbSyncTimer) clearInterval(this.dbSyncTimer);
 
     await forceFlush();
     console.log("📊 Traffic service stopped");
