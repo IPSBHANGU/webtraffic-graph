@@ -1,4 +1,4 @@
-import "./env";
+import "./env.js";
 import express from "express";
 import cors from "cors";
 import { createServer } from "http";
@@ -150,7 +150,6 @@ async function main() {
           "traffic_weekly",
           "traffic_monthly",
           "traffic_events",
-          "traffic_realtime",
         ],
         redisKeysCleared: keys.length,
       });
