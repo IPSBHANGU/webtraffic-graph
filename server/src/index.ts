@@ -17,7 +17,6 @@ async function main() {
     trafficEvents,
     trafficHourly,
     trafficMinute,
-    trafficRealtime,
     trafficWeekly,
     trafficMonthly,
   } = await import("./db");
@@ -131,7 +130,7 @@ async function main() {
       await db.delete(trafficWeekly).execute();
       await db.delete(trafficMonthly).execute();
       await db.delete(trafficEvents).execute();
-      await db.delete(trafficRealtime).execute();
+      
 
       // Clear Redis counters (keys matching traffic:*)
       const keys = await counterClient.keys("traffic:*");
@@ -192,7 +191,6 @@ async function main() {
           "traffic_weekly",
           "traffic_monthly",
           "traffic_events",
-          "traffic_realtime",
         ],
         redisKeysCleared: keys.length,
       });
