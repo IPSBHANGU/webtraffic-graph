@@ -6,9 +6,11 @@ import {
 } from "../redis/index.js";
 import { db, trafficEvents, trafficMinute } from "../db/index.js";
 import { sql } from "drizzle-orm";
+import { sendTrafficMilestoneAlert } from "../utils/notifications.js";
 
-const BATCH_SIZE = 30;  // Flush when batch size reached
-const FLUSH_INTERVAL_MS = 200;  // Flush every 300ms for near-instant persistence
+const BATCH_SIZE = 30; 
+const FLUSH_INTERVAL_MS = 200;  
+const MILESTONE_INTERVAL = 10000;  
 
 interface TrafficEvent {
   timestamp: Date;
@@ -27,10 +29,49 @@ function getLocalDateString(date: Date = new Date()): string {
   return `${y}-${m}-${d}`;
 }
 
+async function checkAndSendMilestoneAlert(total: number): Promise<void> {
+  const currentMilestone = Math.floor(total / MILESTONE_INTERVAL) * MILESTONE_INTERVAL;
+  
+  if (currentMilestone < MILESTONE_INTERVAL) {
+    return;
+  }
+  
+  const lastMilestone = await redisCounter.getLastMilestone();
+  
+  
+  if (currentMilestone > lastMilestone) {
+   
+    const lockAcquired = await redisCounter.acquireMilestoneLock(currentMilestone);
+    
+    if (lockAcquired) {
+      try {
+        
+        const recheckLastMilestone = await redisCounter.getLastMilestone();
+        if (currentMilestone > recheckLastMilestone) {
+         
+          await sendTrafficMilestoneAlert(currentMilestone, total);
+          
+         
+          await redisCounter.setLastMilestone(currentMilestone);
+          
+          console.log(`Traffic alert: ${currentMilestone.toLocaleString()} (current: ${total.toLocaleString()})`);
+        }
+      } catch (err: any) {
+        console.error("Error sending milestone alert:", err.message);
+      }
+    }
+    
+  }
+}
+
 // In-memory buffer for batching
 let eventBuffer: TrafficEvent[] = [];
 let flushTimer: NodeJS.Timeout | null = null;
 let isProcessingBuffer = false;
+
+// Throttle milestone checks to prevent spam
+let lastMilestoneCheck = 0;
+const MILESTONE_CHECK_INTERVAL_MS = 2000; // Check milestones at most once every 2 seconds
 
 // Queue for batch database writes
 export const batchQueue = new Queue("batch-db-writes", {
@@ -76,6 +117,13 @@ export async function queueTrafficEvent(event: Omit<TrafficEvent, "date">): Prom
   
   // Get week total (cached in Redis)
   const weekTotal = await redisCounter.getWeekTotal();
+  
+  // Check for milestone alerts (throttled to prevent spam)
+  const now = Date.now();
+  if (now - lastMilestoneCheck >= MILESTONE_CHECK_INTERVAL_MS) {
+    lastMilestoneCheck = now;
+    await checkAndSendMilestoneAlert(weekTotal);
+  }
   
   // Publish real-time update via Redis pub/sub
   await publishTrafficUpdate({
@@ -151,6 +199,13 @@ export async function queueTrafficEvents(events: Array<Omit<TrafficEvent, "date"
   
   // Get week total
   const weekTotal = await redisCounter.getWeekTotal();
+  
+  // Check for milestone alerts (throttled to prevent spam)
+  const now = Date.now();
+  if (now - lastMilestoneCheck >= MILESTONE_CHECK_INTERVAL_MS) {
+    lastMilestoneCheck = now;
+    await checkAndSendMilestoneAlert(weekTotal);
+  }
   
   // Publish real-time update
   await publishTrafficUpdate({

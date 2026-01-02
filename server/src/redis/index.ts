@@ -87,6 +87,10 @@ export const REDIS_KEYS = {
   lastSyncedTotal: "traffic:last_synced_total",
   // Increment counter for session (monotonic)
   sessionIncrements: "traffic:session_increments",
+  // Last milestone that was notified
+  lastMilestone: "traffic:last_milestone",
+  // Lock key for milestone notification (prevents duplicate notifications)
+  milestoneLock: (milestone: number) => `traffic:milestone_lock:${milestone}`,
 };
 
 // Atomic counter operations
@@ -195,6 +199,31 @@ export const redisCounter = {
   // Increment session counter
   async incrementSession(amount: number = 1): Promise<number> {
     return await counterClient.incrby(REDIS_KEYS.sessionIncrements, amount);
+  },
+
+  async getLastMilestone(): Promise<number> {
+    const result = await counterClient.get(REDIS_KEYS.lastMilestone);
+    return parseInt(result || "0", 10);
+  },
+
+  async setLastMilestone(milestone: number): Promise<void> {
+    await counterClient.set(REDIS_KEYS.lastMilestone, milestone.toString());
+    // Keep milestone history for 30 days
+    await counterClient.expire(REDIS_KEYS.lastMilestone, 30 * 24 * 60 * 60);
+  },
+
+  // Atomically check and set milestone lock (returns true if lock was acquired)
+  // This prevents duplicate notifications when multiple requests check simultaneously
+  async acquireMilestoneLock(milestone: number): Promise<boolean> {
+    const lockKey = REDIS_KEYS.milestoneLock(milestone);
+    // SETNX returns 1 if key was set (lock acquired), 0 if key already exists (lock not acquired)
+    const result = await counterClient.setnx(lockKey, "1");
+    if (result === 1) {
+      // Set expiry for the lock (5 minutes should be enough)
+      await counterClient.expire(lockKey, 5 * 60);
+      return true;
+    }
+    return false;
   },
 };
 
