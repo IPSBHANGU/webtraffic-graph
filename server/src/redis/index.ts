@@ -170,14 +170,17 @@ export const redisCounter = {
     }
   },
 
-  // Sync Redis counter from DB value (always use DB as source of truth)
+  // Sync Redis counter from DB value (only when DB is ahead or equal)
+  // During high load, Redis is updated immediately while DB writes are batched,
+  // so Redis may be ahead. Only sync when DB is higher (more recent data).
   async syncFromDb(date: string, dbValue: number): Promise<void> {
     const key = REDIS_KEYS.dateCounter(date);
     const currentValue = await counterClient.get(key);
     const currentNum = parseInt(currentValue || "0", 10);
 
-    // Always update if DB value is different (DB is source of truth for sync)
-    if (currentNum !== dbValue) {
+    // Only update if DB value is higher (DB has newer aggregated data)
+    // If Redis is higher, it means Redis has recent updates not yet in DB
+    if (dbValue > currentNum) {
       await counterClient.set(key, dbValue.toString());
       await counterClient.expire(key, 8 * 24 * 60 * 60);
     }

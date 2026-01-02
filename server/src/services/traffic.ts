@@ -108,7 +108,9 @@ export class TrafficService {
     }
   }
 
-  // Sync Redis counters from DB (keeps Redis updated with DB data)
+  // Sync Redis counters from DB (only when DB is ahead)
+  // During high load, Redis is updated immediately while DB writes are batched,
+  // so Redis may be ahead. This sync ensures DB-aggregated data eventually reaches Redis.
   private async syncRedisFromDb() {
     try {
       const now = new Date();
@@ -160,10 +162,14 @@ export class TrafficService {
         // Get current Redis value
         const redisValue = await redisCounter.get(dateStr);
 
-        // Sync from DB (DB is source of truth)
+        // Sync from DB (only updates if DB value is higher)
+        // syncFromDb will preserve Redis value if it's ahead (normal during high load)
         if (redisValue !== dbCount) {
           await redisCounter.syncFromDb(dateStr, dbCount);
-          updatedCount++;
+          // Only count as updated if DB was actually higher (syncFromDb now only updates when DB > Redis)
+          if (dbCount > redisValue) {
+            updatedCount++;
+          }
         }
         syncedCount++;
       }
