@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Lock, Event
 from collections import deque
 
-URL = "https://webtraffic-graph.onrender.com/api/hit"
+URL = "http://localhost:3001/api/hit"
 stop_event = Event()
 
 # Thread-safe counters
